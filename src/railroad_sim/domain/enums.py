@@ -64,3 +64,73 @@ class TraversalDirection(Enum):
 
     FORWARD = "forward"
     REVERSE = "reverse"
+
+
+# determine if a particular piece of RollingStock is fit for service
+class RollingStockCondition(Enum):
+    IN_SERVICE = "in_service"
+    DAMAGED = "damaged"
+    BAD_ORDER = "bad_order"
+    IN_SHOP = "in_shop"
+    RETIRED = "retired"
+
+
+class MaintenanceStatus(Enum):
+    NONE = "none"
+    SCHEDULED = "scheduled"
+    DUE_SOON = "due_soon"
+    OVERDUE = "overdue"
+
+
+class RollingStockEventType(Enum):
+    CREATED = "created"
+    RENAMED = "renamed"
+    INSPECTED = "inspected"
+    DAMAGED = "damaged"
+    BAD_ORDERED = "bad_ordered"
+    MAINTENANCE_SCHEDULED = "maintenance_scheduled"
+    MAINTENANCE_COMPLETED = "maintenance_completed"
+    RELEASED_TO_SERVICE = "released_to_service"
+    ASSIGNED_TO_TRAIN = "assigned_to_train"
+    REMOVED_FROM_TRAIN = "removed_from_train"
+    DERAILED = "derailed"
+    HAZMAT_LEAK = "hazmat_leak"
+    MECHANICAL_FAILURE = "mechanical_failure"
+    LOAD_SHIFT = "load_shift"
+
+
+class EventSeverity(Enum):
+    INFO = "info"
+    WARNING = "warning"
+    MAJOR = "major"
+    CRITICAL = "critical"
+
+
+class TrainEventType(Enum):
+    CREATED = "created"
+    CONSIST_ASSIGNED = "consist_assigned"
+    CONSIST_CHANGED = "consist_changed"
+    CONSIST_RELEASED = "consist_released"
+    DEPARTED = "departed"
+    ARRIVED = "arrived"
+    HELD = "held"
+    COMPLETED = "completed"
+    CANCELED = "canceled"
+    CAR_ADDED = "car_added"
+    CAR_REMOVED = "car_removed"
+    ROLLING_STOCK_DAMAGED = "rolling_stock_damaged"
+    ROLLING_STOCK_DERAILED = "rolling_stock_derailed"
+    HAZMAT_LEAK_REPORTED = "hazmat_leak_reported"
+    MECHANICAL_FAILURE_REPORTED = "mechanical_failure_reported"
+    LOAD_SHIFT_REPORTED = "load_shift_recorded"
+    EMERGENCY_STOPPED = "emergency_stopped"
+    INCIDENT_REPORTED = "incident_reported"
+
+
+class TrainStatus(Enum):
+    PLANNED = "planned"
+    ACTIVE = "active"
+    HELD = "held"
+    COMPLETED = "completed"
+    CANCELED = "canceled"
+    EMERGENCY_STOPPED = "emergency_stopped"
