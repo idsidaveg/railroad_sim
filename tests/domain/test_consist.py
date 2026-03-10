@@ -164,3 +164,24 @@ def test_consist_diagnostic_dump_contains_anchor():
 
     assert "Anchor: UP 1002" in dump
     assert "[2] UP 1002  [ANCHOR]" in dump
+
+
+def test_rolling_stock_cannot_exist_in_two_consists():
+    a, b, c = build_three_car_chain()
+
+    consist1 = Consist(anchor=b)
+    consist2 = Consist(anchor=a)
+
+    ids1 = {car.asset_id for car in consist1.ordered_equipment()}
+    ids2 = {car.asset_id for car in consist2.ordered_equipment()}
+
+    assert ids1 == ids2
+
+
+def test_rolling_stock_cannot_belong_to_multiple_consists():
+    a, b, c = build_three_car_chain()
+
+    Consist(anchor=b)
+
+    with pytest.raises(ConsistOperationError):
+        Consist(anchor=a)
