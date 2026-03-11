@@ -134,3 +134,42 @@ class TrainStatus(Enum):
     COMPLETED = "completed"
     CANCELED = "canceled"
     EMERGENCY_STOPPED = "emergency_stopped"
+
+
+# Track level enums
+class TrackEnd(str, Enum):
+    A = "A"
+    B = "B"
+
+
+class TrackType(str, Enum):
+    MAINLINE = "mainline"
+    SIDING = "siding"
+    YARD = "yard"
+    INDUSTRIAL = "industrial"
+    STAGING = "staging"
+
+
+class TrackCondition(str, Enum):
+    CLEAR = "clear"
+    SNOW_COVERED = "snow_covered"
+    DAMAGED = "damaged"
+    RESTRICTED = "restricted"
+    OUT_OF_SERVICE = "out_of_service"
+
+
+class TrackTrafficRule(str, Enum):
+    BIDIRECTIONAL = "bidirectional"
+    A_TO_B_ONLY = "a_to_b_only"
+    B_TO_A_ONLY = "b_to_a_only"
+
+
+class TravelDirection(str, Enum):
+    TOWARD_A = "toward_a"
+    TOWARD_B = "toward_b"
+    STATIONARY = "stationary"
+
+
+class MovementState(str, Enum):
+    STATIONARY = "stationary"
+    MOVING = "moving"
