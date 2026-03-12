@@ -476,3 +476,133 @@ def test_connected_tracks_raises_for_unknown_track_id():
 
     with pytest.raises(ValueError, match="Track id .* not found in network"):
         network.connected_tracks(uuid4())
+
+
+def test_topology_summary_includes_expected_sections_and_connections():
+    network = RailNetwork(name="Pacific North")
+
+    track_a = make_track("Main 1")
+    track_b = make_track("Main 2")
+
+    network.add_track(track_a)
+    network.add_track(track_b)
+
+    junction = make_simple_junction(track_a, track_b)
+    network.add_junction(junction)
+
+    summary = network.topology_summary()
+
+    assert "RailNetwork: Pacific North" in summary
+    assert "Tracks" in summary
+    assert "Junctions" in summary
+    assert "Connectivity" in summary
+    assert "Main 1 (A,B)" in summary
+    assert "Main 2 (A,B)" in summary
+    assert "JCT-1" in summary
+    assert "Main 1:B  <->  Main 2:A" in summary
+    assert "Main 1 -> Main 2" in summary
+    assert "Main 2 -> Main 1" in summary
+
+
+def test_debug_topology_summary_output():
+    network = RailNetwork(name="Pacific North")
+
+    track_a = make_track("Main 1")
+    track_b = make_track("Main 2")
+
+    network.add_track(track_a)
+    network.add_track(track_b)
+
+    junction = make_simple_junction(track_a, track_b)
+    network.add_junction(junction)
+
+    print()
+    print(network.topology_summary())
+
+
+def test_graph_edges_returns_bidirectional_junction_edges():
+    network = RailNetwork(name="Pacific North")
+
+    track_a = make_track("Main 1")
+    track_b = make_track("Main 2")
+
+    network.add_track(track_a)
+    network.add_track(track_b)
+
+    junction = make_simple_junction(track_a, track_b)
+    network.add_junction(junction)
+
+    edges = network.graph_edges()
+
+    assert ("Main 1:B", "Main 2:A", "junction:JCT-1") in edges
+    assert ("Main 2:A", "Main 1:B", "junction:JCT-1") in edges
+
+
+def test_graph_edges_includes_boundary_edge():
+    network = RailNetwork(name="Pacific North")
+
+    track = make_track("Main 1")
+    network.add_track(track)
+
+    endpoint = make_endpoint(track, TrackEnd.B)
+    remote_network_id = uuid4()
+    remote_track_id = uuid4()
+
+    connection = BoundaryConnection(
+        local_endpoint=endpoint,
+        remote_network_id=remote_network_id,
+        remote_track_id=remote_track_id,
+        remote_end=TrackEnd.A,
+    )
+    network.add_boundary_connection(connection)
+
+    edges = network.graph_edges()
+
+    assert (
+        "Main 1:B",
+        f"remote:{remote_network_id}/{remote_track_id}:A",
+        "boundary",
+    ) in edges
+
+
+def test_graph_debugger_summary_includes_endpoint_and_edge_sections():
+    network = RailNetwork(name="Pacific North")
+
+    track_a = make_track("Main 1")
+    track_b = make_track("Main 2")
+
+    network.add_track(track_a)
+    network.add_track(track_b)
+
+    junction = make_simple_junction(track_a, track_b)
+    network.add_junction(junction)
+
+    summary = network.graph_debugger_summary()
+
+    assert "RailNetwork Graph: Pacific North" in summary
+    assert "Endpoints" in summary
+    assert "Edges" in summary
+    assert "Boundary Edges" in summary
+    assert "Main 1:A" in summary
+    assert "Main 1:B" in summary
+    assert "Main 2:A" in summary
+    assert "Main 2:B" in summary
+    assert "Main 1:B -> Main 2:A [junction:JCT-1]" in summary
+
+
+def test_graph_debugger_summary_shows_none_when_no_boundary_edges():
+    network = RailNetwork(name="Pacific North")
+
+    track_a = make_track("Main 1")
+    track_b = make_track("Main 2")
+
+    network.add_track(track_a)
+    network.add_track(track_b)
+
+    junction = make_simple_junction(track_a, track_b)
+    network.add_junction(junction)
+
+    summary = network.graph_debugger_summary()
+
+    assert "Boundary Edges" in summary
+    assert "(none)" in summary

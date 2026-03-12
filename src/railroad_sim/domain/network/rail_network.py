@@ -163,3 +163,144 @@ class RailNetwork:
             for conn in self.boundary_connections.values()
             if conn.local_endpoint == endpoint
         ]
+
+    def topology_summary(self) -> str:
+        """Return a human-readable summary of the network topology."""
+
+        lines: list[str] = []
+
+        lines.append(f"RailNetwork: {self.name}")
+        lines.append("")
+
+        # ----------------------------
+        # Tracks
+        # ----------------------------
+
+        lines.append("Tracks")
+        lines.append("------")
+
+        for track in self.tracks.values():
+            lines.append(f"{track.name} (A,B)")
+
+        lines.append("")
+
+        # ----------------------------
+        # Junctions
+        # ----------------------------
+
+        lines.append("Junctions")
+        lines.append("---------")
+
+        for junction in self.junctions.values():
+            lines.append(junction.name)
+
+            for route in junction.routes:
+                left = route.from_endpoint
+                right = route.to_endpoint
+
+                lines.append(
+                    f"  {left.track.name}:{left.end.value}  <->  "
+                    f"{right.track.name}:{right.end.value}"
+                )
+
+            lines.append("")
+
+        # ----------------------------
+        # Connectivity
+        # ----------------------------
+
+        lines.append("Connectivity")
+        lines.append("------------")
+
+        for track in self.tracks.values():
+            connected = self.connected_tracks(track.track_id)
+
+            for other in connected:
+                lines.append(f"{track.name} -> {other.name}")
+
+        return "\n".join(lines)
+
+    def graph_edges(self) -> list[tuple[str, str, str]]:
+        """Return directed graph edges for debugging.
+
+        Each tuple is:
+            (from_node, to_node, label)
+
+        Where:
+        - from_node and to_node are endpoint strings like 'Main 1:B'
+        - label identifies the source of the edge, such as a junction or boundary
+        """
+        edges: list[tuple[str, str, str]] = []
+
+        for junction in self.junctions.values():
+            for route in junction.routes:
+                left = route.from_endpoint
+                right = route.to_endpoint
+
+                left_node = self._endpoint_label(left)
+                right_node = self._endpoint_label(right)
+                label = f"junction:{junction.name}"
+
+                edges.append((left_node, right_node, label))
+                edges.append((right_node, left_node, label))
+
+        for connection in self.boundary_connections.values():
+            local_node = self._endpoint_label(connection.local_endpoint)
+            remote_node = (
+                f"remote:{connection.remote_network_id}/"
+                f"{connection.remote_track_id}:"
+                f"{connection.remote_end.value}"
+            )
+
+            edges.append((local_node, remote_node, "boundary"))
+
+        return edges
+
+    def graph_debugger_summary(self) -> str:
+        """Return a detailed endpoint-level graph summary for debugging."""
+        lines: list[str] = []
+
+        lines.append(f"RailNetwork Graph: {self.name}")
+        lines.append("")
+
+        lines.append("Endpoints")
+        lines.append("---------")
+
+        endpoint_labels: set[str] = set()
+
+        for track in self.tracks.values():
+            endpoint_labels.add(f"{track.name}:A")
+            endpoint_labels.add(f"{track.name}:B")
+
+        for label in sorted(endpoint_labels):
+            lines.append(label)
+
+        lines.append("")
+
+        lines.append("Edges")
+        lines.append("-----")
+
+        edges = self.graph_edges()
+        junction_edges = [edge for edge in edges if edge[2].startswith("junction:")]
+        boundary_edges = [edge for edge in edges if edge[2] == "boundary"]
+
+        for from_node, to_node, label in sorted(junction_edges):
+            lines.append(f"{from_node} -> {to_node} [{label}]")
+
+        lines.append("")
+
+        lines.append("Boundary Edges")
+        lines.append("--------------")
+
+        if boundary_edges:
+            for from_node, to_node, label in sorted(boundary_edges):
+                lines.append(f"{from_node} -> {to_node} [{label}]")
+        else:
+            lines.append("(none)")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _endpoint_label(endpoint: TrackEndpoint) -> str:
+        """Return a short human-readable label for a track endpoint."""
+        return f"{endpoint.track.name}:{endpoint.end.value}"
