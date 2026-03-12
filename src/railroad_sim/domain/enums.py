@@ -173,3 +173,11 @@ class TravelDirection(str, Enum):
 class MovementState(str, Enum):
     STATIONARY = "stationary"
     MOVING = "moving"
+
+
+class JunctionType(str, Enum):
+    CONNECTION = "connection"
+    TURNOUT = "turnout"
+    WYE = "wye"
+    CROSSING = "crossing"
+    LADDER = "ladder"

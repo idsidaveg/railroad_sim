@@ -1,3 +1,5 @@
+from uuid import UUID, uuid4
+
 import pytest
 
 from railroad_sim.domain.consist import Consist
@@ -23,6 +25,29 @@ def make_consist(*road_numbers: str) -> Consist:
         left.rear_coupler.connect(right.front_coupler)
 
     return Consist(anchor=cars[0])
+
+
+def test_track_generates_track_id_by_default():
+    track = Track(
+        name="Yard 1",
+        track_type=TrackType.YARD,
+        length_ft=1000,
+    )
+
+    assert isinstance(track.track_id, UUID)
+
+
+def test_track_accepts_explicit_track_id():
+    explicit_id = uuid4()
+
+    track = Track(
+        name="Yard 1",
+        track_type=TrackType.YARD,
+        length_ft=1000,
+        track_id=explicit_id,
+    )
+
+    assert track.track_id == explicit_id
 
 
 def test_track_creation_with_required_fields():

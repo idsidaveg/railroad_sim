@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
 from railroad_sim.domain.enums import (
     MovementState,
@@ -89,6 +90,7 @@ class Track:
     condition: TrackCondition = TrackCondition.CLEAR
     traffic_rule: TrackTrafficRule = TrackTrafficRule.BIDIRECTIONAL
     occupancies: list[TrackOccupancy] = field(default_factory=list)
+    track_id: UUID = field(default_factory=uuid4)
 
     def __post_init__(self) -> None:
         if not self.name.strip():

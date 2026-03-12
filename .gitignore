@@ -20,3 +20,4 @@ htmlcov/
 
 # OS junk
 .DS_Store
+*.png
