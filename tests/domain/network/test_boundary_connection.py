@@ -2,18 +2,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from railroad_sim.domain.enums import TrackEnd, TrackType
+from railroad_sim.domain.enums import TrackEnd
 from railroad_sim.domain.junction import TrackEndpoint
 from railroad_sim.domain.network.boundary_connection import BoundaryConnection
-from railroad_sim.domain.track import Track
-
-
-def make_track(name: str) -> Track:
-    return Track(
-        name=name,
-        track_type=TrackType.MAINLINE,
-        length_ft=1000,
-    )
+from tests.support.track_builders import make_track
 
 
 def test_boundary_connection_creation_with_required_fields():

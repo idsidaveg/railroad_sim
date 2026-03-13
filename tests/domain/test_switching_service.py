@@ -4,49 +4,11 @@ from railroad_sim.domain.consist import Consist
 from railroad_sim.domain.exceptions import ConsistOperationError
 from railroad_sim.domain.rolling_stock import RollingStock
 from railroad_sim.domain.switching_service import SwitchingService
-
-
-def build_three_car_chain():
-    a = RollingStock("UP", "1001")
-    b = RollingStock("UP", "1002")
-    c = RollingStock("UP", "1003")
-
-    a.rear_coupler.connect(b.front_coupler)
-    b.rear_coupler.connect(c.front_coupler)
-
-    return a, b, c
-
-
-def build_six_car_chain():
-    a = RollingStock("UP", "1001")
-    b = RollingStock("UP", "1002")
-    c = RollingStock("UP", "1003")
-    d = RollingStock("UP", "1004")
-    e = RollingStock("UP", "1005")
-    f = RollingStock("UP", "1006")
-
-    a.rear_coupler.connect(b.front_coupler)
-    b.rear_coupler.connect(c.front_coupler)
-    c.rear_coupler.connect(d.front_coupler)
-    d.rear_coupler.connect(e.front_coupler)
-    e.rear_coupler.connect(f.front_coupler)
-
-    return a, b, c, d, e, f
-
-
-def build_two_two_car_consists():
-    a = RollingStock("UP", "1001")
-    b = RollingStock("UP", "1002")
-    c = RollingStock("UP", "1003")
-    d = RollingStock("UP", "1004")
-
-    a.rear_coupler.connect(b.front_coupler)
-    c.rear_coupler.connect(d.front_coupler)
-
-    left = Consist(anchor=a)
-    right = Consist(anchor=c)
-
-    return a, b, c, d, left, right
+from tests.support.consist_builders import (
+    build_six_car_chain,
+    build_three_car_chain,
+    build_two_two_car_consists,
+)
 
 
 def test_cut_after_delegates_to_consist_split_after():

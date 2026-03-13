@@ -10,13 +10,7 @@ from railroad_sim.domain.enums import (
     RollingStockEventType,
 )
 from railroad_sim.domain.rolling_stock import RollingStock
-
-
-def make_car(
-    reporting_mark: str = "UP",
-    road_number: str = "1001",
-) -> RollingStock:
-    return RollingStock(reporting_mark=reporting_mark, road_number=road_number)
+from tests.support.rolling_stock_builders import make_car
 
 
 def test_rolling_stock_creates_with_uuid_and_couplers():

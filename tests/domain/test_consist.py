@@ -6,17 +6,7 @@ from railroad_sim.domain.exceptions import (
     ConsistTopologyError,
 )
 from railroad_sim.domain.rolling_stock import RollingStock
-
-
-def build_three_car_chain():
-    a = RollingStock("UP", "1001")
-    b = RollingStock("UP", "1002")
-    c = RollingStock("UP", "1003")
-
-    a.rear_coupler.connect(b.front_coupler)
-    b.rear_coupler.connect(c.front_coupler)
-
-    return a, b, c
+from tests.support.consist_builders import build_three_car_chain
 
 
 def test_consist_order_three_cars():

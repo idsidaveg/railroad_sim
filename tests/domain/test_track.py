@@ -10,12 +10,8 @@ from railroad_sim.domain.enums import (
     TrackType,
     TravelDirection,
 )
-from railroad_sim.domain.rolling_stock import RollingStock
 from railroad_sim.domain.track import Track, TrackOccupancy
-
-
-def make_car(road_number: str) -> RollingStock:
-    return RollingStock(reporting_mark="UP", road_number=road_number)
+from tests.support.rolling_stock_builders import make_car
 
 
 def make_consist(*road_numbers: str) -> Consist:

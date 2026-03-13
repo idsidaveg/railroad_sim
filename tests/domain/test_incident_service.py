@@ -9,15 +9,8 @@ from railroad_sim.domain.enums import (
     TrainStatus,
 )
 from railroad_sim.domain.incident_service import IncidentService
-from railroad_sim.domain.rolling_stock import RollingStock
 from railroad_sim.domain.train import Train
-
-
-def make_car(
-    reporting_mark: str = "UP",
-    road_number: str = "1001",
-) -> RollingStock:
-    return RollingStock(reporting_mark=reporting_mark, road_number=road_number)
+from tests.support.rolling_stock_builders import make_car
 
 
 def make_consist() -> Consist:

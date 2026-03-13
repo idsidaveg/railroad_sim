@@ -5,14 +5,7 @@ import pytest
 from railroad_sim.domain.enums import JunctionType, TrackEnd, TrackType
 from railroad_sim.domain.junction import Junction, JunctionRoute, TrackEndpoint
 from railroad_sim.domain.track import Track
-
-
-def make_track(name: str) -> Track:
-    return Track(
-        name=name,
-        track_type=TrackType.MAINLINE,
-        length_ft=1000,
-    )
+from tests.support.track_builders import make_track
 
 
 def test_track_endpoint_creation():
