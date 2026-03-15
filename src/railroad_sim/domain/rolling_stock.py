@@ -134,6 +134,11 @@ class RollingStock:
 
         return True
 
+    @property
+    def equipment_class(self) -> str:
+        """Return the operational classification for this equipment"""
+        return "ROLLING_STOCK"
+
     def can_complete_trip(self, distance_miles: int) -> bool:
         """
         Determine whether this asset can complete a proposed trip

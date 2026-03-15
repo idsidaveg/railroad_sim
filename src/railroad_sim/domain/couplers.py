@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
 from railroad_sim.domain.enums import CouplerPosition
 from railroad_sim.domain.exceptions import (
@@ -20,12 +21,30 @@ class Coupler:
 
     A coupler may connect to at most one other coupler.
     Front and rear couplers are independent.
+
+    Persistence notes:
+    - Each coupler has its own immutable UUID.
+    - A coupler UUID may be restored using ``coupler_id_value``.
+    - ``connected_to`` remains a runtime object reference and should be
+      serialized by identity elsewhere in the persistence layer.
     """
 
     owner: RollingStock
     position: CouplerPosition
     is_damaged: bool = False
+    coupler_id_value: InitVar[UUID | None] = None
+
     connected_to: Coupler | None = field(default=None, init=False, repr=False)
+    _coupler_id: UUID = field(init=False, repr=False)
+
+    def __post_init__(self, coupler_id_value: UUID | None) -> None:
+        """Assign an immutable UUID, or restore one if provided."""
+        self._coupler_id = coupler_id_value if coupler_id_value is not None else uuid4()
+
+    @property
+    def coupler_id(self) -> UUID:
+        """Return the immutable UUID for this coupler."""
+        return self._coupler_id
 
     @property
     def is_connected(self) -> bool:
@@ -94,3 +113,12 @@ class Coupler:
 
         self.connected_to = None
         other.connected_to = None
+
+    def __str__(self) -> str:
+        """Human-readable debugging representation."""
+        owner_id = getattr(self.owner, "equipment_id", "Unknown")
+        return f"{owner_id}:{self.position.name} [{self.coupler_id}]"
+
+    def __repr__(self) -> str:
+        """Debugger-friendly representation."""
+        return f"Coupler({self})"

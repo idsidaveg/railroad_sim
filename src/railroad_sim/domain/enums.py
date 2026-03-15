@@ -1,7 +1,17 @@
+"""
+Enum conventions used in this project:
+
+Enum
+    Internal logic / algorithm control
+
+str, Enum
+    Values that may be serialized, logged, persisted, or sent to UI layers
+"""
+
 from enum import Enum
 
 
-class CouplerPosition(Enum):
+class CouplerPosition(str, Enum):
     """
     Physical location of a coupler on a piece of rolling stock.
 
@@ -23,7 +33,7 @@ class CouplerPosition(Enum):
     REAR = "rear"
 
 
-class TraversalDirection(Enum):
+class TraversalDirection(str, Enum):
     """
     Direction used when walking through a consist.
 
@@ -67,7 +77,7 @@ class TraversalDirection(Enum):
 
 
 # determine if a particular piece of RollingStock is fit for service
-class RollingStockCondition(Enum):
+class RollingStockCondition(str, Enum):
     IN_SERVICE = "in_service"
     DAMAGED = "damaged"
     BAD_ORDER = "bad_order"
@@ -75,14 +85,14 @@ class RollingStockCondition(Enum):
     RETIRED = "retired"
 
 
-class MaintenanceStatus(Enum):
+class MaintenanceStatus(str, Enum):
     NONE = "none"
     SCHEDULED = "scheduled"
     DUE_SOON = "due_soon"
     OVERDUE = "overdue"
 
 
-class RollingStockEventType(Enum):
+class RollingStockEventType(str, Enum):
     CREATED = "created"
     RENAMED = "renamed"
     INSPECTED = "inspected"
@@ -99,14 +109,14 @@ class RollingStockEventType(Enum):
     LOAD_SHIFT = "load_shift"
 
 
-class EventSeverity(Enum):
+class EventSeverity(str, Enum):
     INFO = "info"
     WARNING = "warning"
     MAJOR = "major"
     CRITICAL = "critical"
 
 
-class TrainEventType(Enum):
+class TrainEventType(str, Enum):
     CREATED = "created"
     CONSIST_ASSIGNED = "consist_assigned"
     CONSIST_CHANGED = "consist_changed"
@@ -122,12 +132,12 @@ class TrainEventType(Enum):
     ROLLING_STOCK_DERAILED = "rolling_stock_derailed"
     HAZMAT_LEAK_REPORTED = "hazmat_leak_reported"
     MECHANICAL_FAILURE_REPORTED = "mechanical_failure_reported"
-    LOAD_SHIFT_REPORTED = "load_shift_recorded"
+    LOAD_SHIFT_REPORTED = "load_shift_reported"
     EMERGENCY_STOPPED = "emergency_stopped"
     INCIDENT_REPORTED = "incident_reported"
 
 
-class TrainStatus(Enum):
+class TrainStatus(str, Enum):
     PLANNED = "planned"
     ACTIVE = "active"
     HELD = "held"
@@ -181,3 +191,84 @@ class JunctionType(str, Enum):
     WYE = "wye"
     CROSSING = "crossing"
     LADDER = "ladder"
+
+
+# ============================================================
+# Rolling Stock Enums
+# ============================================================
+class MotivePowerType(str, Enum):
+    STEAM = "steam"
+    DIESEL = "diesel"
+    HYDROGEN = "hydrogen"
+
+
+class BoxCarType(str, Enum):
+    STANDARD = "standard"
+    PLUG_DOOR = "plug_door"
+    INSULATED = "insulated"
+    REFRIGERATED = "refrigerated"
+    AUTO_PARTS = "auto_parts"
+
+
+class BoxCarService(str, Enum):
+    GENERAL = "general"
+    FOOD_GRADE = "food_grade"
+    PAPER = "paper"
+    APPLIANCE = "appliance"
+    AUTO_PARTS = "auto_parts"
+
+
+class BoxCarThermalProtection(str, Enum):
+    NONE = "none"
+    INSULATED = "insulated"
+    REFRIGERATED = "refrigerated"
+
+
+class TankCarType(str, Enum):
+    GENERAL_SERVICE = "general_service"
+    PRESSURE = "pressure"
+    CRYOGENIC = "cryogenic"
+
+
+class TankCarService(str, Enum):
+    GENERAL = "general"
+    CHEMICAL = "chemical"
+    PETROLEUM = "petroleum"
+    FOOD_GRADE = "food_grade"
+
+
+class TankCarThermalProtection(str, Enum):
+    NONE = "none"
+    INSULATED = "insulated"
+    HEATED = "heated"
+    REFRIGERATED = "refrigerated"
+
+
+class IntermodalCarType(str, Enum):
+    WELL_CAR = "well_car"
+    SPINE_CAR = "spine_car"
+    PLATFORM_CAR = "platform_car"
+
+
+class GondolaType(str, Enum):
+    GENERAL_SERVICE = "general_service"
+    HIGH_SIDE = "high_side"
+    LOW_SIDE = "low_side"
+    DROP_BOTTOM = "drop_bottom"
+    MILL_GONDOLA = "mill_gondola"
+
+
+class GondolaService(str, Enum):
+    GENERAL = "general"
+    SCRAP = "scrap"
+    AGGREGATE = "aggregate"
+    STEEL = "steel"
+    TIE_PLATE = "tie_plate"
+    MAINTENANCE = "maintenance"
+
+
+class CabooseType(str, Enum):
+    STANDARD = "standard"
+    CUPOLA = "cupola"
+    BAY_WINDOW = "bay_window"
+    TRANSFER = "transfer"
