@@ -127,9 +127,20 @@ def print_equipment_summary(equipment: DebugEquipmentSet) -> None:
         print(f"{key.upper():<12} {car}")
         print(f"  equipment_class : {car.equipment_class}")
         print(f"  asset_id        : {car.asset_id}")
-        print(f"  front_coupler   : {car.front_coupler}")
-        print(f"  rear_coupler    : {car.rear_coupler}")
+        print_indented_block("  front_coupler   : ", car.front_coupler.debug_summary())
+        print_indented_block("  rear_coupler    : ", car.rear_coupler.debug_summary())
         print()
+
+
+def print_indented_block(label: str, text: str, indent: str = "    ") -> None:
+    lines = text.splitlines()
+    if not lines:
+        print(f"{label}")
+        return
+
+    print(f"{label}{lines[0]}")
+    for line in lines[1:]:
+        print(f"{indent}{line}")
 
 
 def demo_basic_loading(equipment: DebugEquipmentSet) -> None:

@@ -41,6 +41,10 @@ class Locomotive(RollingStock):
     def equipment_class(self) -> str:
         return "LOCO"
 
+    @property
+    def equipment_short_name(self) -> str:
+        return "LOCO"
+
     def __str__(self) -> str:
         return (
             f"{self.equipment_id} "

@@ -41,6 +41,10 @@ class Caboose(RollingStock):
     def equipment_class(self) -> str:
         return "CABOOSE"
 
+    @property
+    def equipment_short_name(self) -> str:
+        return "CAB"
+
     def occupy(self) -> None:
         self.occupied = True
 

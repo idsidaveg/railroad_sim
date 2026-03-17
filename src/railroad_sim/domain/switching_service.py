@@ -110,24 +110,32 @@ setout_block(consist, first_car, last_car)
             A-B-C-D-E-F  ->  A-B-C-E-F  +  D
 
 
-pickup_block(train_consist, block_consist)
-    Pick up a block of cars and append it to the rear of a train consist.
+pickup_block(train, block, after_car=None)
+    Pick up a block of cars and add it to a train consist.
 
-    Example:
-        Train:
-            A-B
+    Behavior:
+        - If after_car is None, append the block to the rear of the train.
+        - If after_car is provided, insert the block immediately after
+            that car in the train consist.
 
-        Block to pick up:
-            C-D
+    Examples:
+        Append to rear:
+            Train: A-B
+            Block: C-D
 
-        Operation:
-            pickup_block(train, block)
+            pickup_block(train, block) -> A-B-C-D
 
-        Result:
-            A-B-C-D
+        Insert in middle:
+            Train: A-B-E-F
+            Block: C-D
 
-    Diagram:
-        A-B | C-D  ->  A-B-C-D
+            pickup_block(train, block, after_car=B) -> A-B-C-D-E-F
+
+    Raises:
+        ConsistOperationError:
+            - if train_consist and block_consist are the same consist
+            - if after_car is provided but is not part of train_consist
+        
 
 
 append_consist(left_consist, right_consist)
@@ -189,7 +197,8 @@ Quick Switching Diagram Reference
     cut_before      A-B-C-D      -> A-B | C-D
     couple          A-B | C-D    -> A-B-C-D
     setout_block    A-B-C-D-E-F  -> A-B-E-F + C-D
-    pickup_block    A-B | C-D    -> A-B-C-D
+    pickup_block    A-B | C-D    -> A-B-C-D (if none)
+                    A-B | C-D    -> A-C-D-B (if populated)
     append_consist  A-B | C-D    -> A-B-C-D
     insert_block    A-B-E-F + C-D -> A-B-C-D-E-F
 
@@ -375,25 +384,50 @@ class SwitchingService:
     def pickup_block(
         train_consist: Consist,
         block_consist: Consist,
+        after_car: RollingStock | None = None,
     ) -> Consist:
         """
-        Pick up a block of cars and append it to the rear of a train consist.
+        Pick up a block of cars and add it to a train consist.
 
-        Example:
-            Train: A-B
-            Block: C-D
+        Behavior:
+            - If after_car is None, append the block to the rear of the train.
+            - If after_car is provided, insert the block immediately after
+              that car in the train consist.
 
-            result -> A-B-C-D
+        Examples:
+            Append to rear:
+                Train: A-B
+                Block: C-D
+
+                pickup_block(train, block) -> A-B-C-D
+
+            Insert in middle:
+                Train: A-B-E-F
+                Block: C-D
+
+                pickup_block(train, block, after_car=B) -> A-B-C-D-E-F
+
+        Raises:
+            ConsistOperationError:
+                - if train_consist and block_consist are the same consist
+                - if after_car is provided but is not part of train_consist
         """
-        train_coupler, block_coupler = SwitchingService.standard_coupling_pair(
-            train_consist, block_consist
-        )
+        if train_consist is block_consist:
+            raise ConsistOperationError(
+                "pickup_block requires train_consist and block_consist "
+                "to be different consists."
+            )
 
-        return train_consist.merge_with(
-            block_consist,
-            self_coupler=train_coupler,
-            other_coupler=block_coupler,
-        )
+        if after_car is None:
+            return SwitchingService.append_consist(train_consist, block_consist)
+
+        ordered = train_consist.ordered_equipment()
+        if after_car not in ordered:
+            raise ConsistOperationError(
+                f"Rolling stock {after_car.equipment_id} is not part of this consist."
+            )
+
+        return SwitchingService.insert_block(train_consist, after_car, block_consist)
 
     @staticmethod
     def append_consist(

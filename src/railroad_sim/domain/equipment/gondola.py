@@ -54,6 +54,10 @@ class Gondola(RollingStock):
     def equipment_class(self) -> str:
         return "GONDOLA"
 
+    @property
+    def equipment_short_name(self) -> str:
+        return "GON"
+
     def can_load_commodity(self, commodity: str) -> bool:
         if not commodity or not commodity.strip():
             return False

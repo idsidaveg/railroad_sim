@@ -95,6 +95,19 @@ class BoxCar(RollingStock):
 
         return "BOX"
 
+    @property
+    def equipment_short_name(self) -> str:
+        if self.boxcar_type == BoxCarType.REFRIGERATED:
+            return "RFR"
+
+        if self.boxcar_type == BoxCarType.INSULATED:
+            return "IBOX"
+
+        if self.boxcar_type == BoxCarType.AUTO_PARTS:
+            return "APBX"
+
+        return "BOX"
+
     def can_load_commodity(self, commodity: str, *, food_grade: bool = False) -> bool:
         """
         Return True if the provided commodity may be loaded based on the

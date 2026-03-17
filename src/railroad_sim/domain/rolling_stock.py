@@ -139,6 +139,11 @@ class RollingStock:
         """Return the operational classification for this equipment"""
         return "ROLLING_STOCK"
 
+    @property
+    def equipment_short_name(self) -> str:
+        """short name used for GUI and rendering requirements for this equipment"""
+        return self.equipment_class
+
     def can_complete_trip(self, distance_miles: int) -> bool:
         """
         Determine whether this asset can complete a proposed trip

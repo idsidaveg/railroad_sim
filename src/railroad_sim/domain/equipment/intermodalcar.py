@@ -55,6 +55,10 @@ class IntermodalCar(RollingStock):
     def equipment_class(self) -> str:
         return "INTERMODAL"
 
+    @property
+    def equipment_short_name(self) -> str:
+        return "IM"
+
     def load_units(self, unit_count: int) -> None:
         if unit_count <= 0:
             raise ValueError("unit_count must be positive.")

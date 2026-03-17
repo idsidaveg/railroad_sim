@@ -117,8 +117,44 @@ class Coupler:
     def __str__(self) -> str:
         """Human-readable debugging representation."""
         owner_id = getattr(self.owner, "equipment_id", "Unknown")
-        return f"{owner_id}:{self.position.name} [{self.coupler_id}]"
+
+        if self.connected_to is None:
+            connection_text = "None"
+        else:
+            other_owner_id = getattr(self.connected_to.owner, "equipment_id", "Unknown")
+            connection_text = f"{other_owner_id}:{self.connected_to.position.name}"
+
+        return (
+            f"{owner_id}:{self.position.name} [{self.coupler_id}] -> {connection_text}"
+        )
 
     def __repr__(self) -> str:
         """Debugger-friendly representation."""
         return f"Coupler({self})"
+
+    def debug_summary(self) -> str:
+        """Return a multi-line summary of the coupler and its connection state."""
+        owner_id = getattr(self.owner, "equipment_id", "Unknown")
+
+        lines = [
+            "Coupler",
+            f"  owner       : {owner_id}",
+            f"  position    : {self.position.name}",
+            f"  coupler_id  : {self.coupler_id}",
+            f"  damaged     : {self.is_damaged}",
+        ]
+
+        if self.connected_to is None:
+            lines.append("  connected   : None")
+        else:
+            other_owner_id = getattr(self.connected_to.owner, "equipment_id", "Unknown")
+            lines.extend(
+                [
+                    "  connected   :",
+                    f"    owner     : {other_owner_id}",
+                    f"    position  : {self.connected_to.position.name}",
+                    f"    coupler_id: {self.connected_to.coupler_id}",
+                ]
+            )
+
+        return "\n".join(lines)

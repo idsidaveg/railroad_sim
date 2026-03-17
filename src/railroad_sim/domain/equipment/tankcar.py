@@ -91,6 +91,16 @@ class TankCar(RollingStock):
 
         return "TANK"
 
+    @property
+    def equipment_short_name(self) -> str:
+        if self.tankcar_type == TankCarType.CRYOGENIC:
+            return "CRYO"
+
+        if self.tankcar_type == TankCarType.PRESSURE:
+            return "PTNK"
+
+        return "TANK"
+
     def can_load_commodity(self, commodity: str, *, food_grade: bool = False) -> bool:
         """
         Return True if the provided commodity may be loaded based on the
