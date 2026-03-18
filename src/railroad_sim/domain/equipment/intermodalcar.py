@@ -48,6 +48,12 @@ class IntermodalCar(RollingStock):
             raise ValueError("current_units_loaded cannot exceed max_load_units.")
 
     @property
+    def operational_length_ft(self) -> float:
+        if self.articulated:
+            return 80.0 * self.well_count
+        return 80.0
+
+    @property
     def is_loaded(self) -> bool:
         return self.current_units_loaded > 0
 

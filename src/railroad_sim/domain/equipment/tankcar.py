@@ -77,6 +77,10 @@ class TankCar(RollingStock):
             self.is_cleaned = False
 
     @property
+    def operational_length_ft(self) -> float:
+        return 60.0
+
+    @property
     def is_loaded(self) -> bool:
         """Return True if the tank car is currently loaded."""
         return self.current_commodity is not None

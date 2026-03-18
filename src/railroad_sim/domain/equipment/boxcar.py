@@ -78,6 +78,10 @@ class BoxCar(RollingStock):
             self.is_cleaned = False
 
     @property
+    def operational_length_ft(self) -> float:
+        return 55.0
+
+    @property
     def is_loaded(self) -> bool:
         """Return True if the boxcar is currently loaded."""
         return self.current_commodity is not None

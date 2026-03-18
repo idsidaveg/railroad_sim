@@ -103,6 +103,10 @@ class RollingStock:
         )
 
     @property
+    def operational_length_ft(self) -> float:
+        raise NotImplementedError
+
+    @property
     def asset_id(self) -> UUID:
         """Immutable unique identity for this equipment."""
         return self._asset_id

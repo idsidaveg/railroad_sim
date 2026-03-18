@@ -38,6 +38,10 @@ class Locomotive(RollingStock):
             raise ValueError("energy_capacity cannot be negative.")
 
     @property
+    def operational_length_ft(self) -> float:
+        return 73.0
+
+    @property
     def equipment_class(self) -> str:
         return "LOCO"
 

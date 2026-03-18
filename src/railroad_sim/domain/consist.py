@@ -411,6 +411,10 @@ class Consist:
         order = self.ordered_equipment()
         return order[-1]
 
+    @property
+    def operational_length_ft(self) -> float:
+        return sum(eq.operational_length_ft for eq in self.ordered_equipment())
+
     @classmethod
     def get_by_id(cls, consist_id: UUID) -> "Consist | None":
         """Return an active consist by ID, if present."""

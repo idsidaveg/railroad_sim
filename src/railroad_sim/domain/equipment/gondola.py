@@ -47,6 +47,10 @@ class Gondola(RollingStock):
             self.is_cleaned = False
 
     @property
+    def operational_length_ft(self) -> float:
+        return 60.0
+
+    @property
     def is_loaded(self) -> bool:
         return self.current_commodity is not None
 

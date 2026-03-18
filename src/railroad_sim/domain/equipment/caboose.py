@@ -38,6 +38,10 @@ class Caboose(RollingStock):
             raise ValueError("BAY_WINDOW cabooses must have has_bay_window=True.")
 
     @property
+    def operational_length_ft(self) -> float:
+        return 40.0
+
+    @property
     def equipment_class(self) -> str:
         return "CABOOSE"
 
