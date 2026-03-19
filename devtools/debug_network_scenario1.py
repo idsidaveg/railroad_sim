@@ -5,19 +5,19 @@ This scenario uses:
 - real RailNetwork / Track / Junction topology
 - real Consist objects with actual operational lengths
 - FootprintService for multi-track occupancy
-- turnout fouling windows for west/east switch areas
+- TurnoutEvaluator for west/east switch fouling
 
 Modeled district:
 - Main West   : 3,000 ft
 - Main Middle : 8,000 ft
-- Main East   : 1,000 ft
+- Main East   : 1,000 ft (or longer if you are testing extended territory)
 - Siding      : 8,000 ft
 
-Operational idea:
+Operational sequence:
 - Eastbound freight takes the siding at the west turnout
-- Westbound express military intermodal keeps the main through the east turnout
-- After the express clears, the freight gets an all-clear and begins pulling back
-  out via the east turnout
+- Westbound express military intermodal keeps the main
+- After the express clears, the freight gets an all-clear and begins pulling
+  back out via the east turnout
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ from railroad_sim.domain.junction import Junction, JunctionRoute, TrackEndpoint
 from railroad_sim.domain.network.footprint_service import FootprintService
 from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
 from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.turnout_evaluator import (
+    TurnoutEvaluator,
+    TurnoutWindow,
+)
 from railroad_sim.domain.network.turnout_occupancy import (
     TurnoutFoulingState,
     TurnoutZone,
@@ -55,10 +59,10 @@ from railroad_sim.domain.network.turnout_types import (
 from railroad_sim.domain.rolling_stock import RollingStock
 from railroad_sim.domain.track import Track, TrackOccupancy
 
+
 MAIN_WEST_LENGTH_FT = 3_000.0
 MAIN_MIDDLE_LENGTH_FT = 8_000.0
-# MAIN_EAST_LENGTH_FT = 1_000.0
-MAIN_EAST_LENGTH_FT = 7_000.0
+MAIN_EAST_LENGTH_FT = 1_000.0
 SIDING_LENGTH_FT = 8_000.0
 
 TARGET_FREIGHT_LENGTH_FT = 6_500.0
@@ -87,14 +91,6 @@ class ScenarioStage(NamedTuple):
 
 
 @dataclass(frozen=True)
-class TurnoutWindow:
-    turnout_name: str
-    track_key: str
-    start_ft: float
-    end_ft: float
-
-
-@dataclass(frozen=True)
 class TrainTurnoutReport:
     train_label: str
     turnout_name: str
@@ -114,8 +110,7 @@ def build_scenario_network() -> tuple[RailNetwork, dict[str, Track]]:
                            \\                                  //
                             \\----------- Siding -------------//
 
-    The turnout locations now exist as real network boundaries instead of
-    imagined offsets on a single monolithic main track.
+    Turnout locations exist as real network boundaries.
     """
     network = RailNetwork(name="Scenario 1 - Freight Takes Siding")
 
@@ -200,6 +195,56 @@ def build_turnout_zones() -> dict[str, TurnoutZone]:
     }
 
 
+def build_turnout_windows(
+    turnout_zones: dict[str, TurnoutZone],
+) -> dict[str, list[TurnoutWindow]]:
+    west_clear = turnout_zones["west"].clearance_length_ft
+    east_clear = turnout_zones["east"].clearance_length_ft
+
+    return {
+        "west": [
+            TurnoutWindow(
+                turnout_name=turnout_zones["west"].name,
+                track_key="main_west",
+                start_ft=max(0.0, MAIN_WEST_LENGTH_FT - west_clear),
+                end_ft=MAIN_WEST_LENGTH_FT,
+            ),
+            TurnoutWindow(
+                turnout_name=turnout_zones["west"].name,
+                track_key="main_middle",
+                start_ft=0.0,
+                end_ft=min(MAIN_MIDDLE_LENGTH_FT, west_clear),
+            ),
+            TurnoutWindow(
+                turnout_name=turnout_zones["west"].name,
+                track_key="siding",
+                start_ft=0.0,
+                end_ft=min(SIDING_LENGTH_FT, west_clear),
+            ),
+        ],
+        "east": [
+            TurnoutWindow(
+                turnout_name=turnout_zones["east"].name,
+                track_key="main_middle",
+                start_ft=max(0.0, MAIN_MIDDLE_LENGTH_FT - east_clear),
+                end_ft=MAIN_MIDDLE_LENGTH_FT,
+            ),
+            TurnoutWindow(
+                turnout_name=turnout_zones["east"].name,
+                track_key="main_east",
+                start_ft=0.0,
+                end_ft=min(MAIN_EAST_LENGTH_FT, east_clear),
+            ),
+            TurnoutWindow(
+                turnout_name=turnout_zones["east"].name,
+                track_key="siding",
+                start_ft=max(0.0, SIDING_LENGTH_FT - east_clear),
+                end_ft=SIDING_LENGTH_FT,
+            ),
+        ],
+    }
+
+
 def couple_chain(equipment: list[RollingStock]) -> Consist:
     if not equipment:
         raise ValueError("equipment list cannot be empty")
@@ -213,6 +258,10 @@ def couple_chain(equipment: list[RollingStock]) -> Consist:
 def build_freight_consist(
     target_length_ft: float = TARGET_FREIGHT_LENGTH_FT,
 ) -> Consist:
+    """
+    Build a long mixed freight until its actual operational length
+    reaches/exceeds the target.
+    """
     lead_set = build_debug_equipment()
     second_set = build_debug_equipment()
 
@@ -248,17 +297,20 @@ def build_freight_consist(
 def build_express_consist(
     target_length_ft: float = TARGET_EXPRESS_LENGTH_FT,
 ) -> Consist:
+    """
+    Build a shorter express military intermodal.
+    """
     equipment_1 = build_debug_equipment()
     equipment_2 = build_debug_equipment()
 
-    loco1 = equipment_1["loco"]
-    loco2 = equipment_2["loco"]
+    loco_1 = equipment_1["loco"]
+    loco_2 = equipment_2["loco"]
 
-    # Give the Express a distinct visible identiy
-    loco1.rename_equipment("MILX", "0001")
-    loco2.rename_equipment("MILX", "0002")
+    loco_1.rename_equipment("MILX", "0001")
+    loco_2.rename_equipment("MILX", "0002")
 
-    equipment: list[RollingStock] = [loco1, loco2]
+    equipment: list[RollingStock] = [loco_1, loco_2]
+
     current_length = sum(car.operational_length_ft for car in equipment)
 
     while current_length < target_length_ft:
@@ -323,121 +375,15 @@ def apply_extent_to_network(
         )
 
 
-def build_turnout_windows(
-    turnout_zones: dict[str, TurnoutZone],
-) -> dict[str, list[TurnoutWindow]]:
-    west_clear = turnout_zones["west"].clearance_length_ft
-    east_clear = turnout_zones["east"].clearance_length_ft
-
-    return {
-        "west": [
-            TurnoutWindow(
-                turnout_name=turnout_zones["west"].name,
-                track_key="main_west",
-                start_ft=max(0.0, MAIN_WEST_LENGTH_FT - west_clear),
-                end_ft=MAIN_WEST_LENGTH_FT,
-            ),
-            TurnoutWindow(
-                turnout_name=turnout_zones["west"].name,
-                track_key="main_middle",
-                start_ft=0.0,
-                end_ft=min(MAIN_MIDDLE_LENGTH_FT, west_clear),
-            ),
-            TurnoutWindow(
-                turnout_name=turnout_zones["west"].name,
-                track_key="siding",
-                start_ft=0.0,
-                end_ft=min(SIDING_LENGTH_FT, west_clear),
-            ),
-        ],
-        "east": [
-            TurnoutWindow(
-                turnout_name=turnout_zones["east"].name,
-                track_key="main_middle",
-                start_ft=max(0.0, MAIN_MIDDLE_LENGTH_FT - east_clear),
-                end_ft=MAIN_MIDDLE_LENGTH_FT,
-            ),
-            TurnoutWindow(
-                turnout_name=turnout_zones["east"].name,
-                track_key="main_east",
-                start_ft=0.0,
-                end_ft=min(MAIN_EAST_LENGTH_FT, east_clear),
-            ),
-            TurnoutWindow(
-                turnout_name=turnout_zones["east"].name,
-                track_key="siding",
-                start_ft=max(0.0, SIDING_LENGTH_FT - east_clear),
-                end_ft=SIDING_LENGTH_FT,
-            ),
-        ],
-    }
-
-
-def ranges_overlap(
-    a_start: float,
-    a_end: float,
-    b_start: float,
-    b_end: float,
-) -> bool:
-    return max(a_start, b_start) < min(a_end, b_end)
-
-
-def turnout_fouling_for_extent(
-    *,
-    train_label: str,
-    extent: ConsistExtent,
-    footprint_service: FootprintService,
-    track_key_by_id: dict[str, str],
-    turnout_windows: dict[str, list[TurnoutWindow]],
-) -> list[TrainTurnoutReport]:
-    footprint = footprint_service.footprint_for_extent(extent)
-    reports: list[TrainTurnoutReport] = []
-
-    for turnout_key in ("west", "east"):
-        turnout_name = turnout_windows[turnout_key][0].turnout_name
-        is_fouled = False
-
-        for segment in footprint.segments:
-            segment_track_key = track_key_by_id[str(segment.track_id)]
-
-            for window in turnout_windows[turnout_key]:
-                if segment_track_key != window.track_key:
-                    continue
-
-                if ranges_overlap(
-                    segment.rear_offset_ft,
-                    segment.front_offset_ft,
-                    window.start_ft,
-                    window.end_ft,
-                ):
-                    is_fouled = True
-                    break
-
-            if is_fouled:
-                break
-
-        reports.append(
-            TrainTurnoutReport(
-                train_label=train_label,
-                turnout_name=turnout_name,
-                is_fouled=is_fouled,
-            )
-        )
-
-    return reports
-
-
 def make_fouling_state_map(
     reports: list[TrainTurnoutReport],
 ) -> dict[tuple[str, str], TurnoutFoulingState]:
     result: dict[tuple[str, str], TurnoutFoulingState] = {}
-
     for report in reports:
         result[(report.train_label, report.turnout_name)] = TurnoutFoulingState(
             turnout_name=report.turnout_name,
             is_fouled=report.is_fouled,
         )
-
     return result
 
 
@@ -479,7 +425,8 @@ def print_extent_report(
         raise ValueError(f"{title} extent invalid: {validation.reason.value}")
 
     path_names = [
-        track_lookup_by_id[str(track_id)].name for track_id in validation.path_track_ids
+        track_lookup_by_id[str(track_id)].name
+        for track_id in validation.path_track_ids
     ]
 
     footprint = footprint_service.footprint_for_extent(extent)
@@ -504,7 +451,7 @@ def print_extent_report(
         f"@ {extent.front_position.offset_ft:.0f} ft"
     )
     print(f"path            : {' -> '.join(path_names)}")
-    print(f"track count     : {footprint.track_count}")
+    print(f"track count     : {len(path_names)}")
     print(f"occupied length : {actual_length:.0f} ft")
     print()
 
@@ -563,7 +510,9 @@ def print_turnout_state(
     freight_east_fouled = report_map[("Freight", turnout_names["east"])].is_fouled
 
     freight_fully_in_clear = (
-        not freight_on_main and not freight_west_fouled and not freight_east_fouled
+        not freight_on_main
+        and not freight_west_fouled
+        and not freight_east_fouled
     )
 
     print_section("TURNOUT / FOULING STATE")
@@ -588,9 +537,7 @@ def print_turnout_state(
 
     print(f"freight_clear_of_main : {not freight_on_main}")
     print(f"freight_fully_in_clear: {freight_fully_in_clear}")
-
-    freight_clear_of_east_turnout = not freight_east_fouled
-    print(f"freight_clear_of_east_turnout: {freight_clear_of_east_turnout}")
+    print(f"freight_clear_of_east_turnout: {not freight_east_fouled}")
     print()
 
 
@@ -601,13 +548,8 @@ def build_scenario_stages(
 ) -> tuple[ScenarioStage, ...]:
     """
     Define placements using the real segmented topology.
-
-    Turnouts:
-    - West turnout sits between Main West:B and {Main Middle:A, Siding:A}
-    - East turnout sits between Main East:A and {Main Middle:B, Siding:B}
     """
 
-    # A: freight entirely on main, straddling the west turnout district
     if freight_length_ft <= MAIN_WEST_LENGTH_FT:
         a_freight = TrainPlacement(
             rear_track="main_west",
@@ -629,7 +571,6 @@ def build_scenario_stages(
             movement_state=MovementState.MOVING,
         )
 
-    # B: freight partially into siding via west turnout
     b_siding_part = min(
         SIDING_LENGTH_FT - 500.0,
         max(1_500.0, freight_length_ft - MAIN_WEST_LENGTH_FT + 500.0),
@@ -647,7 +588,6 @@ def build_scenario_stages(
         movement_state=MovementState.MOVING,
     )
 
-    # C: freight just fully inside siding
     c_freight = TrainPlacement(
         rear_track="siding",
         rear_offset_ft=0.0,
@@ -658,7 +598,6 @@ def build_scenario_stages(
         movement_state=MovementState.MOVING,
     )
 
-    # D: freight fully in the clear inside the siding
     d_rear_siding = TURNOUT_CLEARANCE_FT + 200.0
     d_front_siding = d_rear_siding + freight_length_ft
     if d_front_siding > SIDING_LENGTH_FT - TURNOUT_CLEARANCE_FT:
@@ -676,11 +615,6 @@ def build_scenario_stages(
         movement_state=MovementState.STATIONARY,
     )
 
-    #
-    # EXPRESS PASS SEQUENCE
-    #
-
-    # E: express enters from west side and fouls WEST turnout
     e_express_front_on_middle = min(600.0, MAIN_MIDDLE_LENGTH_FT)
     e_express_rear_on_west = (
         MAIN_WEST_LENGTH_FT + e_express_front_on_middle - express_length_ft
@@ -697,17 +631,12 @@ def build_scenario_stages(
         movement_state=MovementState.MOVING,
     )
 
-    # F: express is fully between the turnouts on the main
     if express_length_ft >= MAIN_MIDDLE_LENGTH_FT - (2 * TURNOUT_CLEARANCE_FT):
-        raise ValueError(
-            "Express is too long to fit fully between turnouts without fouling."
-        )
+        raise ValueError("Express is too long to fit fully between turnouts without fouling.")
     f_rear_middle = TURNOUT_CLEARANCE_FT + 500.0
     f_front_middle = f_rear_middle + express_length_ft
     if f_front_middle > MAIN_MIDDLE_LENGTH_FT - TURNOUT_CLEARANCE_FT:
-        raise ValueError(
-            "Express Stage F does not fit between turnout clearance limits."
-        )
+        raise ValueError("Express Stage F does not fit between turnout clearance limits.")
     f_express = TrainPlacement(
         rear_track="main_middle",
         rear_offset_ft=f_rear_middle,
@@ -718,7 +647,6 @@ def build_scenario_stages(
         movement_state=MovementState.MOVING,
     )
 
-    # G: express reaches east side and fouls EAST turnout
     g_express_front_on_east = min(600.0, MAIN_EAST_LENGTH_FT)
     g_express_rear_on_middle = (
         MAIN_MIDDLE_LENGTH_FT + g_express_front_on_east - express_length_ft
@@ -735,10 +663,8 @@ def build_scenario_stages(
         movement_state=MovementState.MOVING,
     )
 
-    # H: express clear, dispatcher gives freight the all-clear
     h_freight = d_freight
 
-    # I: freight begins pulling out via east turnout
     i_front_on_main_east = min(600.0, MAIN_EAST_LENGTH_FT)
     i_rear_on_siding = SIDING_LENGTH_FT + i_front_on_main_east - freight_length_ft
     if i_rear_on_siding < 0:
@@ -753,7 +679,6 @@ def build_scenario_stages(
         movement_state=MovementState.MOVING,
     )
 
-    # J: freight farther onto main, still fouling east turnout
     j_front_on_main_east = min(900.0, MAIN_EAST_LENGTH_FT)
     j_rear_on_siding = SIDING_LENGTH_FT + j_front_on_main_east - freight_length_ft
     if j_rear_on_siding < 0:
@@ -768,10 +693,6 @@ def build_scenario_stages(
         movement_state=MovementState.MOVING,
     )
 
-    # K: freight fully back on main and clear of east turnout
-    #
-    # If Main East is long enough, the whole freight can fit on Main East.
-    # Otherwise, it must still straddle Main Middle -> Main East.
     if MAIN_EAST_LENGTH_FT >= freight_length_ft + TURNOUT_CLEARANCE_FT:
         k_rear_on_main_east = TURNOUT_CLEARANCE_FT + 50.0
         k_front_on_main_east = k_rear_on_main_east + freight_length_ft
@@ -877,11 +798,12 @@ def build_scenario_stages(
             title="Stage K - Freight fully back on main and clear of the turnout",
             freight=k_freight,
             note=(
-                "Freight has restablished on the main and is clear of the east turnout."
+                "Freight has re-established on the main and is clear of the east turnout."
                 if MAIN_EAST_LENGTH_FT >= freight_length_ft + TURNOUT_CLEARANCE_FT
-                else "Freight has re-established on the main, but still fouls the east turnout. "
-                "Additional mainline territory east of the control point is required to show "
-                "the freight fully clear of the turnout."
+                else
+                "Freight has re-established on the main, but still fouls the east turnout. "
+                "Additional mainline territory east of the control point is required to "
+                "show the freight fully clear of the turnout."
             ),
         ),
     )
@@ -901,6 +823,10 @@ def run_stage(
     clear_track_occupancies(tracks)
 
     turnout_windows = build_turnout_windows(turnout_zones)
+    evaluator = TurnoutEvaluator(
+        footprint_service=footprint_service,
+        track_key_by_id=track_key_by_id,
+    )
 
     freight_extent = make_extent(
         consist=freight_consist,
@@ -929,13 +855,19 @@ def run_stage(
         movement_state=stage.freight.movement_state,
     )
 
-    active_turnout_reports = turnout_fouling_for_extent(
-        train_label="Freight",
+    freight_turnout_states = evaluator.evaluate_extent(
         extent=freight_extent,
-        footprint_service=footprint_service,
-        track_key_by_id=track_key_by_id,
-        turnout_windows=turnout_windows,
+        turnout_windows_by_key=turnout_windows,
     )
+
+    active_turnout_reports = [
+        TrainTurnoutReport(
+            train_label="Freight",
+            turnout_name=state.turnout_name,
+            is_fouled=state.is_fouled,
+        )
+        for state in freight_turnout_states.values()
+    ]
 
     if stage.express is not None:
         express_extent = make_extent(
@@ -964,14 +896,18 @@ def run_stage(
             movement_state=stage.express.movement_state,
         )
 
+        express_turnout_states = evaluator.evaluate_extent(
+            extent=express_extent,
+            turnout_windows_by_key=turnout_windows,
+        )
+
         active_turnout_reports.extend(
-            turnout_fouling_for_extent(
+            TrainTurnoutReport(
                 train_label="Express",
-                extent=express_extent,
-                footprint_service=footprint_service,
-                track_key_by_id=track_key_by_id,
-                turnout_windows=turnout_windows,
+                turnout_name=state.turnout_name,
+                is_fouled=state.is_fouled,
             )
+            for state in express_turnout_states.values()
         )
     else:
         for turnout_name in (
@@ -1052,7 +988,7 @@ if __name__ == "__main__":
         nargs="?",
         default=None,
         choices=["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"],
-        help="Run only one stage: a, b, c, d, e, f, g, or h, i, j or k",
+        help="Run only one stage: a, b, c, d, e, f, g, h, i, j, or k",
     )
     args = parser.parse_args()
 

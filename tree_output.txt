@@ -71,7 +71,10 @@
 │       │   │   ├── movement_types.py
 │       │   │   ├── position_types.py
 │       │   │   ├── __pycache__
-│       │   │   └── rail_network.py
+│       │   │   ├── rail_network.py
+│       │   │   ├── turnout_evaluator.py
+│       │   │   ├── turnout_occupancy.py
+│       │   │   └── turnout_types.py
 │       │   ├── __pycache__
 │       │   ├── rolling_stock.py
 │       │   ├── switching_service.py
@@ -108,7 +111,9 @@
 │   │   │   ├── test_boundary_connection.py
 │   │   │   ├── test_footprint_service.py
 │   │   │   ├── test_movement_service.py
-│   │   │   └── test_rail_network.py
+│   │   │   ├── test_rail_network.py
+│   │   │   ├── test_turnout_evaluator.py
+│   │   │   └── test_turnout_occupancy.py
 │   │   ├── __pycache__
 │   │   ├── test_consist.py
 │   │   ├── test_couplers.py
@@ -134,4 +139,4 @@
 │   └── test_env.py
 └── tree_output.txt
 
-38 directories, 97 files
+38 directories, 102 files
