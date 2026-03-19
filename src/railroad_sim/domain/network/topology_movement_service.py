@@ -5,16 +5,16 @@ from uuid import UUID
 
 from railroad_sim.domain.enums import TrackEnd
 from railroad_sim.domain.junction import Junction, JunctionRoute, TrackEndpoint
-from railroad_sim.domain.network.movement_types import (
-    MovementFeasibilityResult,
-    MovementOption,
-    MovementPath,
-    MovementPathStep,
-)
 from railroad_sim.domain.network.rail_network import RailNetwork
 from railroad_sim.domain.network.topology_movement_enums import (
     MovementBlockReason,
     MovementOptionKind,
+)
+from railroad_sim.domain.network.topology_movement_types import (
+    MovementFeasibilityResult,
+    MovementOption,
+    MovementPath,
+    MovementPathStep,
 )
 from railroad_sim.domain.track import Track
 
