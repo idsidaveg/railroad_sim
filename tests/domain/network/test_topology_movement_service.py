@@ -10,12 +10,14 @@ from railroad_sim.domain.enums import (
 )
 from railroad_sim.domain.junction import Junction, JunctionRoute
 from railroad_sim.domain.network.boundary_connection import BoundaryConnection
-from railroad_sim.domain.network.movement_enums import (
+from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_enums import (
     MovementBlockReason,
     MovementOptionKind,
 )
-from railroad_sim.domain.network.movement_service import MovementService
-from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_service import (
+    TopologyMovementService,
+)
 from railroad_sim.domain.track import Track
 from tests.support.junction_builders import (
     build_linear_connection_pair,
@@ -129,7 +131,7 @@ def build_boundary_network() -> tuple[RailNetwork, Track, BoundaryConnection]:
 
 def test_movement_options_from_track_returns_adjacent_track_option() -> None:
     network, track_a, track_b, junction, route_ab = build_simple_ab_network()
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     options = service.movement_options_from_track(track_a.track_id)
 
@@ -147,7 +149,7 @@ def test_movement_options_from_track_returns_adjacent_track_option() -> None:
 
 def test_movement_options_from_endpoint_returns_boundary_option() -> None:
     network, track_a, boundary = build_boundary_network()
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     options = service.movement_options_from_endpoint(endpoint_a(track_a))
 
@@ -165,7 +167,7 @@ def test_movement_options_from_endpoint_returns_boundary_option() -> None:
 
 def test_boundary_exists_at_endpoint_true_only_for_matching_endpoint() -> None:
     network, track_a, boundary = build_boundary_network()
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     assert service.boundary_exists_at_endpoint(endpoint_a(track_a)) is True
     assert service.boundary_exists_at_endpoint(endpoint_b(track_a)) is False
@@ -178,7 +180,7 @@ def test_boundary_exists_at_endpoint_true_only_for_matching_endpoint() -> None:
 
 def test_find_path_between_tracks_returns_single_hop_path() -> None:
     network, track_a, track_b, junction, route_ab = build_simple_ab_network()
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     path = service.find_path_between_tracks(track_a.track_id, track_b.track_id)
 
@@ -198,7 +200,7 @@ def test_find_path_between_tracks_returns_multi_hop_path() -> None:
     network, track_a, track_b, track_c, junction_ab, junction_bc, route_ab, route_bc = (
         build_simple_abc_network()
     )
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     path = service.find_path_between_tracks(track_a.track_id, track_c.track_id)
 
@@ -216,7 +218,7 @@ def test_find_path_between_tracks_same_source_and_destination_returns_trivial_pa
     None
 ):
     network, track_a, track_b, junction, route_ab = build_simple_ab_network()
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     path = service.find_path_between_tracks(track_a.track_id, track_a.track_id)
 
@@ -236,7 +238,7 @@ def test_can_move_between_tracks_returns_success_for_connected_clear_aligned_pat
     network, track_a, track_b, track_c, junction_ab, junction_bc, route_ab, route_bc = (
         build_simple_abc_network()
     )
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     result = service.can_move_between_tracks(track_a.track_id, track_c.track_id)
 
@@ -255,7 +257,7 @@ def test_can_move_between_tracks_fails_when_intermediate_track_out_of_service() 
     network, track_a, track_b, track_c, junction_ab, junction_bc, route_ab, route_bc = (
         build_simple_abc_network(middle_condition=TrackCondition.OUT_OF_SERVICE)
     )
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     result = service.can_move_between_tracks(track_a.track_id, track_c.track_id)
 
@@ -275,7 +277,7 @@ def test_can_move_between_tracks_fails_when_required_route_is_misaligned() -> No
     network, track_a, track_b, track_c, junction_ab, junction_bc, route_ab, route_bc = (
         build_simple_abc_network(align_bc=False)
     )
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     result = service.can_move_between_tracks(track_a.track_id, track_c.track_id)
 
@@ -295,7 +297,7 @@ def test_can_move_between_tracks_returns_no_path_for_disconnected_tracks() -> No
     network.add_track(track_a)
     network.add_track(track_b)
 
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     result = service.can_move_between_tracks(track_a.track_id, track_b.track_id)
 
@@ -307,7 +309,7 @@ def test_can_move_between_tracks_returns_no_path_for_disconnected_tracks() -> No
 
 def test_can_move_between_tracks_raises_for_unknown_source_track() -> None:
     network, track_a, track_b, junction, route_ab = build_simple_ab_network()
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     with pytest.raises(ValueError, match="not found"):
         service.can_move_between_tracks(uuid4(), track_b.track_id)
@@ -315,7 +317,7 @@ def test_can_move_between_tracks_raises_for_unknown_source_track() -> None:
 
 def test_can_move_between_tracks_raises_for_unknown_destination_track() -> None:
     network, track_a, track_b, junction, route_ab = build_simple_ab_network()
-    service = MovementService(network)
+    service = TopologyMovementService(network)
 
     with pytest.raises(ValueError, match="not found"):
         service.can_move_between_tracks(track_a.track_id, uuid4())

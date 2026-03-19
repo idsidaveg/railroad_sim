@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 from railroad_sim.domain.junction import JunctionRoute, TrackEndpoint
-from railroad_sim.domain.network.movement_enums import (
+from railroad_sim.domain.network.topology_movement_enums import (
     MovementBlockReason,
     MovementOptionKind,
 )

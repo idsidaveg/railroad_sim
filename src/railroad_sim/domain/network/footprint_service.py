@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from railroad_sim.domain.network.movement_service import MovementService
 from railroad_sim.domain.network.position_types import (
     ConsistExtent,
     ConsistFootprint,
@@ -12,6 +11,9 @@ from railroad_sim.domain.network.position_types import (
     TrackOccupancySegment,
 )
 from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_service import (
+    TopologyMovementService,
+)
 from railroad_sim.domain.track import Track
 
 
@@ -31,10 +33,10 @@ class FootprintService:
     def __init__(
         self,
         network: RailNetwork,
-        movement_service: MovementService | None = None,
+        movement_service: TopologyMovementService | None = None,
     ) -> None:
         self._network = network
-        self._movement_service = movement_service or MovementService(network)
+        self._movement_service = movement_service or TopologyMovementService(network)
 
     # -------------------------------------------------------------------------
     # Public API

@@ -9,10 +9,12 @@ from railroad_sim.domain.network.consist_movement_types import (
     MovementExecutionResult,
 )
 from railroad_sim.domain.network.footprint_service import FootprintService
-from railroad_sim.domain.network.movement_enums import MovementOptionKind
-from railroad_sim.domain.network.movement_service import MovementService
 from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
 from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_enums import MovementOptionKind
+from railroad_sim.domain.network.topology_movement_service import (
+    TopologyMovementService,
+)
 from railroad_sim.domain.network.turnout_evaluator import TurnoutEvaluator
 
 
@@ -52,12 +54,12 @@ class ConsistMovementService:
         network: RailNetwork,
         footprint_service: FootprintService,
         turnout_evaluator: TurnoutEvaluator,
-        topology_movement_service: MovementService | None = None,
+        topology_movement_service: TopologyMovementService | None = None,
     ) -> None:
         self._network = network
         self._footprint_service = footprint_service
         self._turnout_evaluator = turnout_evaluator
-        self._topology = topology_movement_service or MovementService(network)
+        self._topology = topology_movement_service or TopologyMovementService(network)
 
     # -------------------------------------------------------------------------
     # Public API

@@ -5,10 +5,6 @@ from uuid import UUID
 
 from railroad_sim.domain.enums import TrackEnd
 from railroad_sim.domain.junction import Junction, JunctionRoute, TrackEndpoint
-from railroad_sim.domain.network.movement_enums import (
-    MovementBlockReason,
-    MovementOptionKind,
-)
 from railroad_sim.domain.network.movement_types import (
     MovementFeasibilityResult,
     MovementOption,
@@ -16,10 +12,14 @@ from railroad_sim.domain.network.movement_types import (
     MovementPathStep,
 )
 from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_enums import (
+    MovementBlockReason,
+    MovementOptionKind,
+)
 from railroad_sim.domain.track import Track
 
 
-class MovementService:
+class TopologyMovementService:
     """
     Read-only service for determining legal movement options at the network topology layer.
 
