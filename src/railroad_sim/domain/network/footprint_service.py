@@ -151,10 +151,54 @@ class FootprintService:
         extent: ConsistExtent,
         path_track_ids: tuple[UUID, ...],
     ) -> tuple[TrackOccupancySegment, ...]:
-        segments: list[TrackOccupancySegment] = []
-
         rear_track_id = extent.rear_position.track_id
         front_track_id = extent.front_position.track_id
+
+        # Defensive sanity check
+        if path_track_ids[0] != rear_track_id or path_track_ids[-1] != front_track_id:
+            raise ValueError("Derived path does not match extent endpoints.")
+
+        # Special handling for 2-track spans, which may include A<->A or B<->B
+        # connections such as the turntable approach alignment.
+        if len(path_track_ids) == 2:
+            rear_track = self._get_track(rear_track_id)
+            front_track = self._get_track(front_track_id)
+
+            if extent.rear_position.offset_ft <= rear_track.length_ft / 2:
+                rear_end_offset = 0.0
+            else:
+                rear_end_offset = rear_track.length_ft
+
+            rear_segment_rear = min(extent.rear_position.offset_ft, rear_end_offset)
+            rear_segment_front = max(extent.rear_position.offset_ft, rear_end_offset)
+
+            if extent.front_position.offset_ft <= front_track.length_ft / 2:
+                front_start_offset = 0.0
+            else:
+                front_start_offset = front_track.length_ft
+
+            front_segment_rear = min(
+                front_start_offset, extent.front_position.offset_ft
+            )
+            front_segment_front = max(
+                front_start_offset, extent.front_position.offset_ft
+            )
+
+            return (
+                TrackOccupancySegment(
+                    track_id=rear_track_id,
+                    rear_offset_ft=rear_segment_rear,
+                    front_offset_ft=rear_segment_front,
+                ),
+                TrackOccupancySegment(
+                    track_id=front_track_id,
+                    rear_offset_ft=front_segment_rear,
+                    front_offset_ft=front_segment_front,
+                ),
+            )
+
+        # Default behavior for 3+ track paths
+        segments: list[TrackOccupancySegment] = []
 
         for index, track_id in enumerate(path_track_ids):
             track = self._get_track(track_id)
@@ -183,10 +227,6 @@ class FootprintService:
                         front_offset_ft=track.length_ft,
                     )
                 )
-
-        # Defensive sanity check
-        if path_track_ids[0] != rear_track_id or path_track_ids[-1] != front_track_id:
-            raise ValueError("Derived path does not match extent endpoints.")
 
         return tuple(segments)
 

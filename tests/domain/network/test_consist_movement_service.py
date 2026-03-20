@@ -19,6 +19,9 @@ from railroad_sim.domain.network.turnout_evaluator import (
     TurnoutWindow,
 )
 from railroad_sim.domain.track import Track
+from railroad_sim.domain.yard.turntable import Turntable
+from railroad_sim.domain.yard.turntable_connection import TurntableConnection
+from tests.support.track_builders import make_track
 
 
 def build_test_consist(*, car_count: int) -> Consist:
@@ -173,8 +176,12 @@ def build_service(
     network: RailNetwork,
     *,
     track_key_by_id: dict[str, str] | None = None,
+    turntable_connections: tuple[TurntableConnection, ...] = (),
 ) -> ConsistMovementService:
-    topology = TopologyMovementService(network)
+    topology = TopologyMovementService(
+        network,
+        turntable_connections=turntable_connections,
+    )
     footprint = FootprintService(network=network, movement_service=topology)
     evaluator = TurnoutEvaluator(
         footprint_service=footprint,
@@ -186,6 +193,49 @@ def build_service(
         turnout_evaluator=evaluator,
         topology_movement_service=topology,
     )
+
+
+def build_turntable_network() -> tuple[
+    RailNetwork,
+    Track,
+    Track,
+    Track,
+    Turntable,
+    TurntableConnection,
+]:
+    """
+    V1 turntable endpoint rules under test:
+
+    approach:A <-> bridge:A  when aligned to approach
+    stall_1:A  <-> bridge:B  when aligned to stall_1
+    """
+    network = RailNetwork(name="Turntable Network")
+
+    approach = make_track("Approach")
+    bridge = make_track("Bridge")
+    stall_1 = make_track("Stall 1")
+
+    for track in (approach, bridge, stall_1):
+        network.add_track(track)
+
+    turntable = Turntable(
+        name="TT",
+        bridge_length_ft=100.0,
+        bridge_track_id=bridge.track_id,
+        approach_track_id=approach.track_id,
+        stall_track_ids=(stall_1.track_id,),
+    )
+
+    connection = TurntableConnection(
+        turntable=turntable,
+        bridge_track=bridge,
+        connected_tracks_by_id={
+            approach.track_id: approach,
+            stall_1.track_id: stall_1,
+        },
+    )
+
+    return network, approach, bridge, stall_1, turntable, connection
 
 
 def test_move_forward_same_track_updates_extent_and_footprint() -> None:
@@ -907,3 +957,268 @@ def test_chained_forward_moves_through_siding_turnout() -> None:
     )
 
     assert step3.turnout_states["WEST_TURNOUT"].is_fouled is False
+
+
+def test_move_forward_crosses_from_approach_onto_bridge_when_aligned_to_approach() -> (
+    None
+):
+    """
+    Test: Forward movement crosses from the approach track onto the bridge when
+    the turntable is aligned to the approach.
+
+    Scenario:
+    A 2-car consist is entirely on the approach track near endpoint A and is
+    facing TOWARD_A. The turntable is aligned to the approach, so the active
+    connection is approach:A <-> bridge:A.
+
+    What this validates:
+    - ConsistMovementService can use dynamic turntable topology.
+    - Movement continues from the approach onto the bridge.
+    - The front enters the bridge at the correct offset.
+    - The rear remains on the approach with correct consist spacing.
+
+    Key expectation:
+    Turntable-backed continuation behaves like any other aligned track
+    continuation at the consist layer.
+    """
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    turntable.align_to(approach.track_id)
+
+    service = build_service(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    consist = build_test_consist(car_count=2)
+    extent = make_extent(
+        consist=consist,
+        rear_track=approach,
+        rear_offset_ft=160.0,
+        front_track=approach,
+        front_offset_ft=50.0,
+        travel_direction=TravelDirection.TOWARD_A,
+    )
+
+    result = service.move_extent(
+        extent=extent,
+        command=MoveCommand.FORWARD,
+        distance_ft=100.0,
+        turnout_windows_by_key={},
+    )
+
+    assert result.actual_distance_ft == 100.0
+    assert result.movement_limited is False
+    assert result.stop_reason is None
+
+    # Front moves 50 ft to approach:A, then 50 ft onto bridge from A.
+    assert result.new_extent.front_position.track_id == bridge.track_id
+    assert result.new_extent.front_position.offset_ft == 50.0
+
+    # Rear remains 110 ft behind the front.
+    assert result.new_extent.rear_position.track_id == approach.track_id
+    assert result.new_extent.rear_position.offset_ft == 60.0
+
+    assert result.new_extent.travel_direction is TravelDirection.TOWARD_B
+
+    assert result.footprint.track_count == 2
+    assert result.footprint.total_occupied_length_ft == 110.0
+    assert result.footprint.occupied_track_ids == (
+        approach.track_id,
+        bridge.track_id,
+    )
+
+
+def test_move_forward_stops_at_bridge_end_when_no_aligned_exit_exists() -> None:
+    """
+    Test: Forward movement stops at the bridge end when there is no aligned exit
+    on the radial side.
+
+    Scenario:
+    A 2-car consist is entirely on the bridge near endpoint B and is facing
+    TOWARD_B. The turntable is aligned only to the approach, so bridge:B has
+    no active continuation.
+
+    What this validates:
+    - ConsistMovementService does not invent a continuation where none exists.
+    - The consist stops exactly at the bridge end.
+    - Stop reason remains consistent with existing dead-end behavior.
+
+    Key expectation:
+    The bridge behaves like a normal track end unless topology exposes an
+    aligned continuation there.
+    """
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    turntable.align_to(approach.track_id)
+
+    service = build_service(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    consist = build_test_consist(car_count=2)
+    extent = make_extent(
+        consist=consist,
+        rear_track=bridge,
+        rear_offset_ft=bridge.length_ft - 160.0,
+        front_track=bridge,
+        front_offset_ft=bridge.length_ft - 50.0,
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    result = service.move_extent(
+        extent=extent,
+        command=MoveCommand.FORWARD,
+        distance_ft=100.0,
+        turnout_windows_by_key={},
+    )
+
+    assert result.actual_distance_ft == 50.0
+    assert result.movement_limited is True
+    assert result.stop_reason == "no_aligned_route"
+
+    assert result.new_extent.front_position.track_id == bridge.track_id
+    assert result.new_extent.front_position.offset_ft == bridge.length_ft
+    assert result.new_extent.rear_position.track_id == bridge.track_id
+    assert result.new_extent.rear_position.offset_ft == bridge.length_ft - 110.0
+
+    assert result.footprint.track_count == 1
+    assert result.footprint.total_occupied_length_ft == 110.0
+    assert result.footprint.occupied_track_ids == (bridge.track_id,)
+
+
+def test_move_forward_crosses_from_bridge_onto_stall_when_aligned_to_stall() -> None:
+    """
+    Test: Forward movement crosses from the bridge onto a stall when the
+    turntable is aligned to that stall.
+
+    Scenario:
+    A 2-car consist is entirely on the bridge near endpoint B and is facing
+    TOWARD_B. The turntable is aligned to Stall 1, so the active connection is
+    bridge:B <-> stall_1:A.
+
+    What this validates:
+    - ConsistMovementService can traverse from the bridge onto a stall.
+    - The front enters the stall at the correct offset.
+    - The rear remains on the bridge with correct consist spacing.
+
+    Key expectation:
+    The bridge-to-stall continuation is handled through topology only.
+    """
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    turntable.align_to(stall_1.track_id)
+
+    service = build_service(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    consist = build_test_consist(car_count=2)
+    extent = make_extent(
+        consist=consist,
+        rear_track=bridge,
+        rear_offset_ft=bridge.length_ft - 160.0,
+        front_track=bridge,
+        front_offset_ft=bridge.length_ft - 50.0,
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    result = service.move_extent(
+        extent=extent,
+        command=MoveCommand.FORWARD,
+        distance_ft=100.0,
+        turnout_windows_by_key={},
+    )
+
+    assert result.actual_distance_ft == 100.0
+    assert result.movement_limited is False
+    assert result.stop_reason is None
+
+    # Front moves 50 ft to bridge:B, then 50 ft into stall_1 from A.
+    assert result.new_extent.front_position.track_id == stall_1.track_id
+    assert result.new_extent.front_position.offset_ft == 50.0
+
+    # Rear remains 110 ft behind the front.
+    assert result.new_extent.rear_position.track_id == bridge.track_id
+    assert result.new_extent.rear_position.offset_ft == bridge.length_ft - 60.0
+
+    assert result.new_extent.travel_direction is TravelDirection.TOWARD_B
+
+    assert result.footprint.track_count == 2
+    assert result.footprint.total_occupied_length_ft == 110.0
+    assert result.footprint.occupied_track_ids == (
+        bridge.track_id,
+        stall_1.track_id,
+    )
+
+
+def test_move_reverse_crosses_from_bridge_back_to_approach_when_aligned_to_approach() -> (
+    None
+):
+    """
+    Test: Reverse movement crosses from the bridge back onto the approach when
+    the turntable is aligned to the approach.
+
+    Scenario:
+    A 2-car consist is entirely on the bridge near endpoint A, initially facing
+    TOWARD_B. A REVERSE command moves it toward A. The turntable is aligned to
+    the approach, so bridge:A <-> approach:A is active.
+
+    What this validates:
+    - Reverse movement uses the same dynamic topology continuation.
+    - The front enters the approach correctly while reversing.
+    - Travel direction flips as expected.
+
+    Key expectation:
+    Reverse traversal through a turntable-backed connection works without any
+    turntable-specific logic in ConsistMovementService.
+    """
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    turntable.align_to(approach.track_id)
+
+    service = build_service(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    consist = build_test_consist(car_count=2)
+    extent = make_extent(
+        consist=consist,
+        rear_track=bridge,
+        rear_offset_ft=160.0,
+        front_track=bridge,
+        front_offset_ft=50.0,
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    result = service.move_extent(
+        extent=extent,
+        command=MoveCommand.REVERSE,
+        distance_ft=100.0,
+        turnout_windows_by_key={},
+    )
+
+    assert result.actual_distance_ft == 100.0
+    assert result.movement_limited is False
+    assert result.stop_reason is None
+
+    # Reversing from TOWARD_B means movement toward A.
+    # The moved end only reaches bridge offset 60.0, so no crossing occurs.
+    assert result.new_extent.front_position.track_id == bridge.track_id
+    assert result.new_extent.front_position.offset_ft == 170.0
+
+    assert result.new_extent.rear_position.track_id == bridge.track_id
+    assert result.new_extent.rear_position.offset_ft == 60.0
+
+    assert result.new_extent.travel_direction is TravelDirection.TOWARD_A
+
+    assert result.footprint.track_count == 1
+    assert result.footprint.total_occupied_length_ft == 110.0
+    assert result.footprint.occupied_track_ids == (bridge.track_id,)

@@ -22,6 +22,7 @@ from railroad_sim.domain.network.turnout_evaluator import TurnoutEvaluator
 class _WalkResult:
     position: NetworkPosition
     actual_distance_ft: float
+    final_direction: TravelDirection
     stop_reason: str | None = None
 
 
@@ -88,7 +89,7 @@ class ConsistMovementService:
 
             derived_rear = self._walk_position_strict(
                 start=advanced_front.position,
-                direction=self._opposite_direction(current_direction),
+                direction=self._opposite_direction(advanced_front.final_direction),
                 distance_ft=consist_length_ft,
                 context="derive rear_position from moved front_position",
             )
@@ -97,7 +98,7 @@ class ConsistMovementService:
                 consist=extent.consist,
                 rear_position=derived_rear.position,
                 front_position=advanced_front.position,
-                travel_direction=current_direction,
+                travel_direction=advanced_front.final_direction,
             )
 
             actual_distance_ft = advanced_front.actual_distance_ft
@@ -115,7 +116,7 @@ class ConsistMovementService:
 
             derived_front = self._walk_position_strict(
                 start=advanced_rear.position,
-                direction=current_direction,
+                direction=self._opposite_direction(advanced_rear.final_direction),
                 distance_ft=consist_length_ft,
                 context="derive front_position from moved rear_position",
             )
@@ -124,7 +125,7 @@ class ConsistMovementService:
                 consist=extent.consist,
                 rear_position=advanced_rear.position,
                 front_position=derived_front.position,
-                travel_direction=reverse_direction,
+                travel_direction=advanced_rear.final_direction,
             )
 
             actual_distance_ft = advanced_rear.actual_distance_ft
@@ -199,6 +200,7 @@ class ConsistMovementService:
                         offset_ft=new_offset_ft,
                     ),
                     actual_distance_ft=moved_ft,
+                    final_direction=current_direction,
                     stop_reason=None,
                 )
 
@@ -218,6 +220,7 @@ class ConsistMovementService:
                 return _WalkResult(
                     position=current,
                     actual_distance_ft=moved_ft,
+                    final_direction=current_direction,
                     stop_reason="no_continuation",
                 )
 
@@ -225,6 +228,7 @@ class ConsistMovementService:
                 return _WalkResult(
                     position=current,
                     actual_distance_ft=moved_ft,
+                    final_direction=current_direction,
                     stop_reason=continuation.stop_reason,
                 )
 
@@ -234,6 +238,7 @@ class ConsistMovementService:
         return _WalkResult(
             position=current,
             actual_distance_ft=moved_ft,
+            final_direction=current_direction,
             stop_reason=None,
         )
 
