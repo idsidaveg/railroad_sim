@@ -8,7 +8,7 @@ from railroad_sim.domain.enums import (
     TrackCondition,
     TrackEnd,
 )
-from railroad_sim.domain.junction import Junction, JunctionRoute
+from railroad_sim.domain.junction import Junction, JunctionRoute, TrackEndpoint
 from railroad_sim.domain.network.boundary_connection import BoundaryConnection
 from railroad_sim.domain.network.rail_network import RailNetwork
 from railroad_sim.domain.network.topology_movement_enums import (
@@ -19,6 +19,8 @@ from railroad_sim.domain.network.topology_movement_service import (
     TopologyMovementService,
 )
 from railroad_sim.domain.track import Track
+from railroad_sim.domain.yard.turntable import Turntable
+from railroad_sim.domain.yard.turntable_connection import TurntableConnection
 from tests.support.junction_builders import (
     build_linear_connection_pair,
     make_connection_junction,
@@ -122,6 +124,49 @@ def build_boundary_network() -> tuple[RailNetwork, Track, BoundaryConnection]:
     network.add_boundary_connection(boundary)
 
     return network, track_a, boundary
+
+
+def build_turntable_network() -> tuple[
+    RailNetwork,
+    Track,
+    Track,
+    Track,
+    Turntable,
+    TurntableConnection,
+]:
+    """
+    V1 turntable endpoint rules under test:
+
+    approach:A <-> bridge:A  when aligned to approach
+    stall_1:A  <-> bridge:B  when aligned to stall_1
+    """
+    network = RailNetwork(name="Turntable Network")
+
+    approach = make_track("Approach")
+    bridge = make_track("Bridge")
+    stall_1 = make_track("Stall 1")
+
+    for track in (approach, bridge, stall_1):
+        network.add_track(track)
+
+    turntable = Turntable(
+        name="TT",
+        bridge_length_ft=100.0,
+        bridge_track_id=bridge.track_id,
+        approach_track_id=approach.track_id,
+        stall_track_ids=(stall_1.track_id,),
+    )
+
+    connection = TurntableConnection(
+        turntable=turntable,
+        bridge_track=bridge,
+        connected_tracks_by_id={
+            approach.track_id: approach,
+            stall_1.track_id: stall_1,
+        },
+    )
+
+    return network, approach, bridge, stall_1, turntable, connection
 
 
 # ---------------------------------------------------------------------
@@ -321,3 +366,133 @@ def test_can_move_between_tracks_raises_for_unknown_destination_track() -> None:
 
     with pytest.raises(ValueError, match="not found"):
         service.can_move_between_tracks(track_a.track_id, uuid4())
+
+
+# ---------------------------------------------------------------------
+# Turntable integration tests
+# ---------------------------------------------------------------------
+
+
+def test_turntable_with_no_alignment_returns_no_bridge_track_movement_options() -> None:
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    service = TopologyMovementService(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    approach_options = service.movement_options_from_endpoint(endpoint_a(approach))
+    bridge_a_options = service.movement_options_from_endpoint(endpoint_a(bridge))
+    bridge_b_options = service.movement_options_from_endpoint(endpoint_b(bridge))
+    stall_options = service.movement_options_from_endpoint(endpoint_a(stall_1))
+
+    assert [
+        opt for opt in approach_options if opt.kind is MovementOptionKind.TRACK
+    ] == []
+    assert [
+        opt for opt in bridge_a_options if opt.kind is MovementOptionKind.TRACK
+    ] == []
+    assert [
+        opt for opt in bridge_b_options if opt.kind is MovementOptionKind.TRACK
+    ] == []
+    assert [opt for opt in stall_options if opt.kind is MovementOptionKind.TRACK] == []
+
+
+def test_turntable_approach_alignment_exposes_bridge_connection_both_directions() -> (
+    None
+):
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    turntable.align_to(approach.track_id)
+
+    service = TopologyMovementService(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    approach_options = service.movement_options_from_endpoint(endpoint_a(approach))
+    bridge_options = service.movement_options_from_endpoint(endpoint_a(bridge))
+
+    approach_track_options = [
+        opt for opt in approach_options if opt.kind is MovementOptionKind.TRACK
+    ]
+    bridge_track_options = [
+        opt for opt in bridge_options if opt.kind is MovementOptionKind.TRACK
+    ]
+
+    assert len(approach_track_options) == 1
+    assert approach_track_options[0].destination_track_id == bridge.track_id
+    assert approach_track_options[0].destination_endpoint == TrackEndpoint(
+        track=bridge,
+        end=TrackEnd.A,
+    )
+    assert approach_track_options[0].is_currently_aligned is True
+
+    assert len(bridge_track_options) == 1
+    assert bridge_track_options[0].destination_track_id == approach.track_id
+    assert bridge_track_options[0].destination_endpoint == TrackEndpoint(
+        track=approach,
+        end=TrackEnd.A,
+    )
+    assert bridge_track_options[0].is_currently_aligned is True
+
+
+def test_turntable_stall_alignment_exposes_bridge_connection_both_directions() -> None:
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    turntable.align_to(stall_1.track_id)
+
+    service = TopologyMovementService(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    stall_options = service.movement_options_from_endpoint(endpoint_a(stall_1))
+    bridge_options = service.movement_options_from_endpoint(endpoint_b(bridge))
+
+    stall_track_options = [
+        opt for opt in stall_options if opt.kind is MovementOptionKind.TRACK
+    ]
+    bridge_track_options = [
+        opt for opt in bridge_options if opt.kind is MovementOptionKind.TRACK
+    ]
+
+    assert len(stall_track_options) == 1
+    assert stall_track_options[0].destination_track_id == bridge.track_id
+    assert stall_track_options[0].destination_endpoint == TrackEndpoint(
+        track=bridge,
+        end=TrackEnd.B,
+    )
+    assert stall_track_options[0].is_currently_aligned is True
+
+    assert len(bridge_track_options) == 1
+    assert bridge_track_options[0].destination_track_id == stall_1.track_id
+    assert bridge_track_options[0].destination_endpoint == TrackEndpoint(
+        track=stall_1,
+        end=TrackEnd.A,
+    )
+    assert bridge_track_options[0].is_currently_aligned is True
+
+
+def test_find_path_between_tracks_uses_active_turntable_connection() -> None:
+    network, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_network()
+    )
+    turntable.align_to(approach.track_id)
+
+    service = TopologyMovementService(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    path = service.find_path_between_tracks(approach.track_id, bridge.track_id)
+
+    assert path is not None
+    assert path.track_ids == (approach.track_id, bridge.track_id)
+    assert len(path.steps) == 1
+    assert path.steps[0].from_track_id == approach.track_id
+    assert path.steps[0].to_track_id == bridge.track_id
+    assert path.steps[0].is_currently_aligned is True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 from uuid import UUID
 
 from railroad_sim.domain.enums import TrackEnd
@@ -17,6 +18,7 @@ from railroad_sim.domain.network.topology_movement_types import (
     MovementPathStep,
 )
 from railroad_sim.domain.track import Track
+from railroad_sim.domain.yard.turntable_connection import TurntableConnection
 
 
 class TopologyMovementService:
@@ -39,8 +41,13 @@ class TopologyMovementService:
     - conflict resolution
     """
 
-    def __init__(self, network: RailNetwork) -> None:
+    def __init__(
+        self,
+        network: RailNetwork,
+        turntable_connections: Iterable[TurntableConnection] = (),
+    ) -> None:
         self._network = network
+        self._turntable_connections = tuple(turntable_connections)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -79,7 +86,7 @@ class TopologyMovementService:
             )
 
         # Junction-mediated exits
-        for junction in self._network.junctions_for_endpoint(endpoint):
+        for junction in self._junctions_for_endpoint(endpoint):
             for route in junction.available_routes_from(endpoint):
                 destination = route.other_endpoint(endpoint)
 
@@ -182,7 +189,6 @@ class TopologyMovementService:
                     misaligned_routes=path.misaligned_routes,
                 )
 
-        # Route alignment screening
         misaligned = path.misaligned_routes
         if misaligned:
             return MovementFeasibilityResult(
@@ -357,6 +363,19 @@ class TopologyMovementService:
     # -------------------------------------------------------------------------
     # Junction helpers
     # -------------------------------------------------------------------------
+
+    def _junctions_for_endpoint(self, endpoint: TrackEndpoint) -> tuple[Junction, ...]:
+        junctions: list[Junction] = list(self._network.junctions_for_endpoint(endpoint))
+
+        for connection in self._turntable_connections:
+            active_junction = connection.build_active_junction()
+            if active_junction is None:
+                continue
+
+            if endpoint in active_junction.endpoints:
+                junctions.append(active_junction)
+
+        return tuple(junctions)
 
     def _is_route_currently_aligned(
         self,
