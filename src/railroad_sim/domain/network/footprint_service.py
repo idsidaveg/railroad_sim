@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from railroad_sim.domain.enums import TrackEnd
+from railroad_sim.domain.junction import TrackEndpoint
 from railroad_sim.domain.network.position_types import (
     ConsistExtent,
     ConsistFootprint,
@@ -158,30 +160,44 @@ class FootprintService:
         if path_track_ids[0] != rear_track_id or path_track_ids[-1] != front_track_id:
             raise ValueError("Derived path does not match extent endpoints.")
 
-        # Special handling for 2-track spans, which may include A<->A or B<->B
-        # connections such as the turntable approach alignment.
+        # Special handling for 2-track spans.
+        #
+        # We must derive segment direction from the actual connected endpoints
+        # between the two tracks, not from midpoint heuristics. This is required
+        # for cases like:
+        # - A <-> A  (approach -> bridge)
+        # - B <-> B  (lead -> approach in scenario wiring)
+        # - B <-> A  (bridge -> stall)
         if len(path_track_ids) == 2:
             rear_track = self._get_track(rear_track_id)
             front_track = self._get_track(front_track_id)
 
-            if extent.rear_position.offset_ft <= rear_track.length_ft / 2:
-                rear_end_offset = 0.0
-            else:
-                rear_end_offset = rear_track.length_ft
+            rear_connected_end = self._connected_end_between_tracks(
+                source_track=rear_track,
+                destination_track=front_track,
+            )
+            front_connected_end = self._connected_end_between_tracks(
+                source_track=front_track,
+                destination_track=rear_track,
+            )
+
+            rear_end_offset = (
+                0.0 if rear_connected_end is TrackEnd.A else rear_track.length_ft
+            )
+            front_start_offset = (
+                0.0 if front_connected_end is TrackEnd.A else front_track.length_ft
+            )
 
             rear_segment_rear = min(extent.rear_position.offset_ft, rear_end_offset)
             rear_segment_front = max(extent.rear_position.offset_ft, rear_end_offset)
 
-            if extent.front_position.offset_ft <= front_track.length_ft / 2:
-                front_start_offset = 0.0
-            else:
-                front_start_offset = front_track.length_ft
-
             front_segment_rear = min(
-                front_start_offset, extent.front_position.offset_ft
+                front_start_offset,
+                extent.front_position.offset_ft,
             )
             front_segment_front = max(
-                front_start_offset, extent.front_position.offset_ft
+                front_start_offset,
+                extent.front_position.offset_ft,
             )
 
             return (
@@ -229,6 +245,34 @@ class FootprintService:
                 )
 
         return tuple(segments)
+
+    def _connected_end_between_tracks(
+        self,
+        *,
+        source_track: Track,
+        destination_track: Track,
+    ) -> TrackEnd:
+        """
+        Determine which endpoint of source_track is currently connected to
+        destination_track in topology.
+
+        This supports normal fixed junctions as well as dynamic connections
+        exposed by TurntableConnection.
+        """
+        endpoint_a = TrackEndpoint(track=source_track, end=TrackEnd.A)
+        endpoint_b = TrackEndpoint(track=source_track, end=TrackEnd.B)
+
+        for endpoint in (endpoint_a, endpoint_b):
+            options = self._movement_service.movement_options_from_endpoint(endpoint)
+
+            for option in options:
+                if option.destination_track_id == destination_track.track_id:
+                    return endpoint.end
+
+        raise ValueError(
+            "Could not determine connected endpoint between tracks "
+            f"{source_track.track_id} and {destination_track.track_id}."
+        )
 
     def _position_in_range(self, position: NetworkPosition, track: Track) -> bool:
         return 0 <= position.offset_ft <= track.length_ft

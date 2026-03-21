@@ -17,6 +17,9 @@ from railroad_sim.domain.network.position_types import (
     NetworkPosition,
 )
 from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_service import (
+    TopologyMovementService,
+)
 from railroad_sim.domain.rolling_stock import RollingStock
 from railroad_sim.domain.track import Track
 from tests.support.track_builders import make_track
@@ -415,3 +418,71 @@ def test_occupied_track_ids_for_extent_raises_for_invalid_extent() -> None:
 
     with pytest.raises(ValueError, match="Invalid consist extent"):
         service.occupied_track_ids_for_extent(extent)
+
+
+def test_footprint_for_extent_counts_remaining_bridge_length_when_spanning_bridge_to_stall() -> (
+    None
+):
+    from railroad_sim.domain.enums import TravelDirection
+    from railroad_sim.domain.network.position_types import (
+        ConsistExtent,
+        NetworkPosition,
+    )
+    from railroad_sim.domain.yard.turntable import Turntable
+    from railroad_sim.domain.yard.turntable_connection import TurntableConnection
+
+    network = RailNetwork(name="Turntable Footprint Network")
+
+    bridge = make_track("Bridge", length_ft=150.0)
+    stall_1 = make_track("Stall 1", length_ft=200.0)
+
+    network.add_track(bridge)
+    network.add_track(stall_1)
+
+    turntable = Turntable(
+        name="TT",
+        bridge_length_ft=150.0,
+        bridge_track_id=bridge.track_id,
+        approach_track_id=uuid4(),  # unused in this test
+        stall_track_ids=(stall_1.track_id,),
+    )
+    turntable.align_to(stall_1.track_id)
+
+    connection = TurntableConnection(
+        turntable=turntable,
+        bridge_track=bridge,
+        connected_tracks_by_id={
+            stall_1.track_id: stall_1,
+        },
+    )
+
+    service = FootprintService(
+        network=network,
+        movement_service=TopologyMovementService(
+            network,
+            turntable_connections=(connection,),
+        ),
+    )
+    consist = make_consist()
+
+    extent = ConsistExtent(
+        consist=consist,
+        rear_position=NetworkPosition(track_id=bridge.track_id, offset_ft=50.0),
+        front_position=NetworkPosition(track_id=stall_1.track_id, offset_ft=28.0),
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    footprint = service.footprint_for_extent(extent)
+
+    assert footprint.track_count == 2
+    assert footprint.occupied_track_ids == (bridge.track_id, stall_1.track_id)
+
+    seg_bridge, seg_stall = footprint.segments
+
+    assert seg_bridge.rear_offset_ft == pytest.approx(50.0)
+    assert seg_bridge.front_offset_ft == pytest.approx(150.0)
+
+    assert seg_stall.rear_offset_ft == pytest.approx(0.0)
+    assert seg_stall.front_offset_ft == pytest.approx(28.0)
+
+    assert footprint.total_occupied_length_ft == pytest.approx(128.0)
