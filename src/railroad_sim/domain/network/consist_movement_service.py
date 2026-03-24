@@ -8,8 +8,16 @@ from railroad_sim.domain.network.consist_movement_types import (
     MoveCommand,
     MovementExecutionResult,
 )
+from railroad_sim.domain.network.contact_resolution_service import (
+    ContactResolutionService,
+)
+from railroad_sim.domain.network.contact_resolution_types import ContactRelationship
 from railroad_sim.domain.network.footprint_service import FootprintService
-from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
+from railroad_sim.domain.network.position_types import (
+    ConsistExtent,
+    ConsistFootprint,
+    NetworkPosition,
+)
 from railroad_sim.domain.network.rail_network import RailNetwork
 from railroad_sim.domain.network.topology_movement_enums import (
     MovementBlockReason,
@@ -59,11 +67,15 @@ class ConsistMovementService:
         footprint_service: FootprintService,
         turnout_evaluator: TurnoutEvaluator,
         topology_movement_service: TopologyMovementService | None = None,
+        contact_resolution_service: ContactResolutionService | None = None,
     ) -> None:
         self._network = network
         self._footprint_service = footprint_service
         self._turnout_evaluator = turnout_evaluator
         self._topology = topology_movement_service or TopologyMovementService(network)
+        self._contact_resolution = (
+            contact_resolution_service or ContactResolutionService()
+        )
 
     # -------------------------------------------------------------------------
     # Public API
@@ -76,6 +88,7 @@ class ConsistMovementService:
         command: MoveCommand,
         distance_ft: float,
         turnout_windows_by_key: dict,
+        active_footprints: tuple[ConsistFootprint, ...] = (),
     ) -> MovementExecutionResult:
         if distance_ft < 0:
             raise ValueError("distance_ft must be >= 0")
@@ -203,6 +216,28 @@ class ConsistMovementService:
             raise ValueError(f"Unsupported MoveCommand: {command}")
 
         footprint = self._footprint_service.footprint_for_extent(new_extent)
+
+        interaction = self._contact_resolution.classify_against_active_footprints(
+            moving_footprint=footprint,
+            active_footprints=active_footprints,
+        )
+
+        if interaction.relationship is ContactRelationship.OVERLAP:
+            blocked_footprint = self._footprint_service.footprint_for_extent(extent)
+            blocked_turnout_states = self._turnout_evaluator.evaluate_extent(
+                extent=extent, turnout_windows_by_key=turnout_windows_by_key
+            )
+            return MovementExecutionResult(
+                requested_distance_ft=distance_ft,
+                actual_distance_ft=0.0,
+                prior_extent=extent,
+                new_extent=extent,
+                footprint=blocked_footprint,
+                turnout_states=blocked_turnout_states,
+                movement_limited=True,
+                stop_reason=MovementBlockReason.TRACK_OCCUPIED,
+            )
+
         turnout_states = self._turnout_evaluator.evaluate_extent(
             extent=new_extent,
             turnout_windows_by_key=turnout_windows_by_key,
