@@ -47,6 +47,9 @@ class IntermodalCar(RollingStock):
         if self.current_units_loaded > self.max_load_units:
             raise ValueError("current_units_loaded cannot exceed max_load_units.")
 
+        if self.tare_weight_lb == 0.0:
+            self.tare_weight_lb = 55_000.0
+
     @property
     def operational_length_ft(self) -> float:
         if self.articulated:

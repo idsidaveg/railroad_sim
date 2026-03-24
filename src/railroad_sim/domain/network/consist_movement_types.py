@@ -18,11 +18,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict
 
 from railroad_sim.domain.network.position_types import (
     ConsistExtent,
     ConsistFootprint,
+)
+from railroad_sim.domain.network.topology_movement_enums import (
+    MovementBlockReason,
 )
 from railroad_sim.domain.network.turnout_occupancy import (
     TurnoutFoulingState,
@@ -91,7 +94,7 @@ class MovementExecutionResult:
     turnout_states: Dict[str, TurnoutFoulingState]
 
     movement_limited: bool = False
-    stop_reason: Optional[str] = None
+    stop_reason: MovementBlockReason = MovementBlockReason.NONE
 
     # -------------------------
     # Convenience properties

@@ -11,6 +11,7 @@ from railroad_sim.domain.network.consist_movement_types import MoveCommand
 from railroad_sim.domain.network.footprint_service import FootprintService
 from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
 from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_enums import MovementBlockReason
 from railroad_sim.domain.network.topology_movement_service import (
     TopologyMovementService,
 )
@@ -280,7 +281,7 @@ def test_move_forward_same_track_updates_extent_and_footprint() -> None:
 
     assert result.actual_distance_ft == 150.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     assert result.new_extent.rear_position.track_id == track.track_id
     assert result.new_extent.rear_position.offset_ft == 250.0
@@ -333,7 +334,7 @@ def test_move_reverse_same_track_updates_extent_and_direction() -> None:
 
     assert result.actual_distance_ft == 100.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     assert result.new_extent.rear_position.offset_ft == 200.0
     assert result.new_extent.front_position.offset_ft == 310.0
@@ -385,7 +386,7 @@ def test_move_forward_stops_at_dead_end_without_continuation() -> None:
 
     assert result.actual_distance_ft == 100.0
     assert result.movement_limited is True
-    assert result.stop_reason == "no_aligned_route"
+    assert result.stop_reason == MovementBlockReason.ROUTE_MISALIGNED
 
     assert result.new_extent.front_position.track_id == track.track_id
     assert result.new_extent.front_position.offset_ft == 1000.0
@@ -438,7 +439,7 @@ def test_move_forward_crosses_aligned_turnout_onto_siding() -> None:
 
     assert result.actual_distance_ft == 100.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     assert result.new_extent.front_position.track_id == tracks["siding"].track_id
     assert result.new_extent.front_position.offset_ft == 50.0
@@ -576,7 +577,7 @@ def test_move_forward_crosses_aligned_turnout_onto_mainline() -> None:
 
     assert result.actual_distance_ft == 100.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     # Front moves 50 ft to Main West:B, then 50 ft into Main Middle from A.
     assert result.new_extent.front_position.track_id == tracks["main_middle"].track_id
@@ -641,7 +642,7 @@ def test_turnout_remains_fouled_on_mainline_until_consist_clears_window() -> Non
 
     assert result.actual_distance_ft == 60.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     # Front moves 50 ft to turnout, then 10 ft into main_middle.
     assert result.new_extent.front_position.track_id == tracks["main_middle"].track_id
@@ -701,7 +702,7 @@ def test_turnout_clears_after_consist_fully_passes_on_mainline() -> None:
 
     assert result.actual_distance_ft == 320.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     # Front moves 50 ft to turnout, then 210 ft into main_middle.
     assert result.new_extent.front_position.track_id == tracks["main_middle"].track_id
@@ -768,7 +769,7 @@ def test_chained_forward_moves_through_mainline_turnout() -> None:
 
     assert step1.actual_distance_ft == 40.0
     assert step1.movement_limited is False
-    assert step1.stop_reason is None
+    assert step1.stop_reason is MovementBlockReason.NONE
     assert step1.new_extent.rear_position.track_id == tracks["main_west"].track_id
     assert step1.new_extent.rear_position.offset_ft == 330.0
     assert step1.new_extent.front_position.track_id == tracks["main_west"].track_id
@@ -791,7 +792,7 @@ def test_chained_forward_moves_through_mainline_turnout() -> None:
 
     assert step2.actual_distance_ft == 70.0
     assert step2.movement_limited is False
-    assert step2.stop_reason is None
+    assert step2.stop_reason is MovementBlockReason.NONE
     assert step2.new_extent.front_position.track_id == tracks["main_middle"].track_id
     assert step2.new_extent.front_position.offset_ft == 10.0
     assert step2.new_extent.rear_position.track_id == tracks["main_west"].track_id
@@ -813,7 +814,7 @@ def test_chained_forward_moves_through_mainline_turnout() -> None:
 
     assert step3.actual_distance_ft == 260.0
     assert step3.movement_limited is False
-    assert step3.stop_reason is None
+    assert step3.stop_reason is MovementBlockReason.NONE
     assert step3.new_extent.front_position.track_id == tracks["main_middle"].track_id
     assert step3.new_extent.front_position.offset_ft == 270.0
     assert step3.new_extent.rear_position.track_id == tracks["main_middle"].track_id
@@ -882,7 +883,7 @@ def test_chained_forward_moves_through_siding_turnout() -> None:
 
     assert step1.actual_distance_ft == 40.0
     assert step1.movement_limited is False
-    assert step1.stop_reason is None
+    assert step1.stop_reason is MovementBlockReason.NONE
 
     assert step1.new_extent.rear_position.track_id == tracks["main_west"].track_id
     assert step1.new_extent.rear_position.offset_ft == 330.0
@@ -911,7 +912,7 @@ def test_chained_forward_moves_through_siding_turnout() -> None:
 
     assert step2.actual_distance_ft == 70.0
     assert step2.movement_limited is False
-    assert step2.stop_reason is None
+    assert step2.stop_reason is MovementBlockReason.NONE
 
     assert step2.new_extent.front_position.track_id == tracks["siding"].track_id
     assert step2.new_extent.front_position.offset_ft == 10.0
@@ -939,7 +940,7 @@ def test_chained_forward_moves_through_siding_turnout() -> None:
 
     assert step3.actual_distance_ft == 260.0
     assert step3.movement_limited is False
-    assert step3.stop_reason is None
+    assert step3.stop_reason is MovementBlockReason.NONE
 
     assert step3.new_extent.front_position.track_id == tracks["siding"].track_id
     assert step3.new_extent.front_position.offset_ft == 270.0
@@ -1010,7 +1011,7 @@ def test_move_forward_crosses_from_approach_onto_bridge_when_aligned_to_approach
 
     assert result.actual_distance_ft == 100.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     # Front moves 50 ft to approach:A, then 50 ft onto bridge from A.
     assert result.new_extent.front_position.track_id == bridge.track_id
@@ -1078,7 +1079,7 @@ def test_move_forward_stops_at_bridge_end_when_no_aligned_exit_exists() -> None:
 
     assert result.actual_distance_ft == 50.0
     assert result.movement_limited is True
-    assert result.stop_reason == "no_aligned_route"
+    assert result.stop_reason == MovementBlockReason.ROUTE_MISALIGNED
 
     assert result.new_extent.front_position.track_id == bridge.track_id
     assert result.new_extent.front_position.offset_ft == bridge.length_ft
@@ -1137,7 +1138,7 @@ def test_move_forward_crosses_from_bridge_onto_stall_when_aligned_to_stall() -> 
 
     assert result.actual_distance_ft == 100.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     # Front moves 50 ft to bridge:B, then 50 ft into stall_1 from A.
     assert result.new_extent.front_position.track_id == stall_1.track_id
@@ -1207,7 +1208,7 @@ def test_move_reverse_crosses_from_bridge_back_to_approach_when_aligned_to_appro
 
     assert result.actual_distance_ft == 100.0
     assert result.movement_limited is False
-    assert result.stop_reason is None
+    assert result.stop_reason is MovementBlockReason.NONE
 
     # Reversing from TOWARD_B means movement toward A.
     # The moved end only reaches bridge offset 60.0, so no crossing occurs.

@@ -1,7 +1,10 @@
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 
+from railroad_sim.domain.enums import TravelDirection
+from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
 from railroad_sim.domain.yard.turntable import Turntable
 
 
@@ -131,6 +134,73 @@ def test_turntable_align_and_clear() -> None:
     assert tt.is_aligned_to(stall) is True
 
     tt.clear_alignment()
+    assert tt.aligned_track_id is None
+
+
+def test_turntable_align_to_allows_rotation_when_protected_extent_is_fully_on_bridge() -> (
+    None
+):
+    bridge_id = uuid4()
+    approach_id = uuid4()
+    stall_id = uuid4()
+
+    tt = Turntable(
+        name="TT",
+        bridge_length_ft=100.0,
+        bridge_track_id=bridge_id,
+        approach_track_id=approach_id,
+        stall_track_ids=(stall_id,),
+    )
+
+    extent = ConsistExtent(
+        consist=Mock(),
+        rear_position=NetworkPosition(
+            track_id=bridge_id,
+            offset_ft=10.0,
+        ),
+        front_position=NetworkPosition(
+            track_id=bridge_id,
+            offset_ft=90.0,
+        ),
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    tt.align_to(stall_id, protected_extent=extent)
+
+    assert tt.aligned_track_id == stall_id
+
+
+def test_turntable_align_to_rejects_rotation_when_protected_extent_is_not_fully_on_bridge() -> (
+    None
+):
+    bridge_id = uuid4()
+    approach_id = uuid4()
+    stall_id = uuid4()
+
+    tt = Turntable(
+        name="TT",
+        bridge_length_ft=100.0,
+        bridge_track_id=bridge_id,
+        approach_track_id=approach_id,
+        stall_track_ids=(stall_id,),
+    )
+
+    extent = ConsistExtent(
+        consist=Mock(),
+        rear_position=NetworkPosition(
+            track_id=bridge_id,
+            offset_ft=10.0,
+        ),
+        front_position=NetworkPosition(
+            track_id=approach_id,
+            offset_ft=90.0,
+        ),
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    with pytest.raises(ValueError, match="fully on the bridge"):
+        tt.align_to(stall_id, protected_extent=extent)
+
     assert tt.aligned_track_id is None
 
 

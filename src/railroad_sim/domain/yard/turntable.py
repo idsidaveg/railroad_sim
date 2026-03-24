@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
+from railroad_sim.domain.network.position_types import ConsistExtent
+
 
 @dataclass(slots=True)
 class Turntable:
@@ -28,6 +30,7 @@ class Turntable:
 
     bridge_track_id: UUID
     approach_track_id: UUID
+    max_gross_weight_lb: float = 600_000.0
     stall_track_ids: tuple[UUID, ...] = ()
     service_track_ids: tuple[UUID, ...] = ()
 
@@ -41,6 +44,9 @@ class Turntable:
 
         if self.bridge_length_ft <= 0:
             raise ValueError("bridge_length_ft must be > 0")
+
+        if self.max_gross_weight_lb <= 0:
+            raise ValueError("max_gross_weight_lb must be > 0")
 
         self._validate_track_membership()
         self._validate_alignment()
@@ -78,16 +84,33 @@ class Turntable:
         """
         return track_id in self.connected_track_ids
 
-    def align_to(self, track_id: UUID) -> None:
+    def align_to(
+        self,
+        track_id: UUID,
+        *,
+        protected_extent: ConsistExtent | None = None,
+    ) -> None:
         """
         Align the turntable bridge to the requested connected track.
 
         V1 rule:
         - exactly one connected non-bridge track may be aligned at a time
+
+        Safety rule:
+        - if a protected extent is provided, it must be fully on the bridge
+          before the turntable may be re-aligned
         """
         if not self.can_align_to(track_id):
             raise ValueError(
                 f"Track id {track_id} is not connected to turntable '{self.name}'."
+            )
+
+        if protected_extent is not None and not self._extent_fully_on_bridge(
+            protected_extent
+        ):
+            raise ValueError(
+                f"Turntable '{self.name}' can only be aligned when the protected "
+                "extent is fully on the bridge."
             )
 
         self.aligned_track_id = track_id
@@ -129,3 +152,10 @@ class Turntable:
                 f"aligned_track_id for turntable '{self.name}' must reference "
                 "the approach, a stall track, or a service track."
             )
+
+    # helper that checks if the Consist is fully on the bridge
+    def _extent_fully_on_bridge(self, extent: ConsistExtent) -> bool:
+        return (
+            extent.rear_position.track_id == self.bridge_track_id
+            and extent.front_position.track_id == self.bridge_track_id
+        )

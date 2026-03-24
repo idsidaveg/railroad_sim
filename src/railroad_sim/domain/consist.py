@@ -415,6 +415,22 @@ class Consist:
     def operational_length_ft(self) -> float:
         return sum(eq.operational_length_ft for eq in self.ordered_equipment())
 
+    @property
+    def tare_weight_lb(self) -> float:
+        return sum(car.tare_weight_lb for car in self.ordered_equipment())
+
+    @property
+    def cargo_weight_lb(self) -> float:
+        return sum(car.cargo_weight_lb for car in self.ordered_equipment())
+
+    @property
+    def gross_weight_lb(self) -> float:
+        return sum(car.gross_weight_lb for car in self.ordered_equipment())
+
+    @property
+    def net_weight_lb(self) -> float:
+        return self.cargo_weight_lb
+
     @classmethod
     def get_by_id(cls, consist_id: UUID) -> "Consist | None":
         """Return an active consist by ID, if present."""

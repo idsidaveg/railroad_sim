@@ -37,6 +37,9 @@ class Caboose(RollingStock):
         if self.caboose_type == CabooseType.BAY_WINDOW and not self.has_bay_window:
             raise ValueError("BAY_WINDOW cabooses must have has_bay_window=True.")
 
+        if self.tare_weight_lb == 0.00:
+            self.tare_weight_lb = 44_000.0
+
     @property
     def operational_length_ft(self) -> float:
         return 40.0

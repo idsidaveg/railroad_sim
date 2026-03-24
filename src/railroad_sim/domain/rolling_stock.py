@@ -44,6 +44,8 @@ class RollingStock:
     # so that the original CREATED event timestamp can be preserved.
     created_at_value: InitVar[datetime | None] = None
     owner: str | None = None
+    tare_weight_lb: float = 0.0
+    cargo_weight_lb: float = 0.0
 
     _asset_id: UUID = field(init=False, repr=False)
     front_coupler: Coupler = field(init=False)
@@ -81,6 +83,12 @@ class RollingStock:
         if not self.road_number:
             raise ValueError("road_number cannot be empty.")
 
+        if self.tare_weight_lb < 0:
+            raise ValueError("tare_weight_lb cannot be negative.")
+
+        if self.cargo_weight_lb < 0:
+            raise ValueError("cargo_weight_lb cannot be negative.")
+
         self.front_coupler = Coupler(
             owner=self,
             position=CouplerPosition.FRONT,
@@ -105,6 +113,14 @@ class RollingStock:
     @property
     def operational_length_ft(self) -> float:
         raise NotImplementedError
+
+    @property
+    def gross_weight_lb(self) -> float:
+        return self.tare_weight_lb + self.cargo_weight_lb
+
+    @property
+    def net_weight_lb(self) -> float:
+        return self.cargo_weight_lb
 
     @property
     def asset_id(self) -> UUID:

@@ -221,6 +221,19 @@ class TopologyMovementService:
     # -------------------------------------------------------------------------
     # Path helpers
     # -------------------------------------------------------------------------
+    def bridge_length_for_track(self, track_id: UUID) -> float | None:
+        for connection in self._turntable_connections:
+            turntable = connection.turntable
+            if turntable.bridge_track_id == track_id:
+                return turntable.bridge_length_ft
+        return None
+
+    def max_gross_weight_for_bridge_track(self, track_id: UUID) -> float | None:
+        for connection in self._turntable_connections:
+            turntable = connection.turntable
+            if turntable.bridge_track_id == track_id:
+                return turntable.max_gross_weight_lb
+        return None
 
     def _neighbor_steps_from_track(
         self,

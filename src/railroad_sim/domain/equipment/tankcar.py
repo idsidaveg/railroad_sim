@@ -76,6 +76,9 @@ class TankCar(RollingStock):
         if self.current_commodity is not None:
             self.is_cleaned = False
 
+        if self.tare_weight_lb == 0.0:
+            self.tare_weight_lb = 90_000.0
+
     @property
     def operational_length_ft(self) -> float:
         return 60.0

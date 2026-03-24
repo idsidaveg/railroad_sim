@@ -37,6 +37,9 @@ class Locomotive(RollingStock):
         if self.energy_capacity is not None and self.energy_capacity < 0:
             raise ValueError("energy_capacity cannot be negative.")
 
+        if self.tare_weight_lb == 0.0:
+            self.tare_weight_lb = 420_000.0
+
     @property
     def operational_length_ft(self) -> float:
         return 73.0

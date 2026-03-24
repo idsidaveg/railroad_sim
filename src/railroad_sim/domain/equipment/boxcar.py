@@ -77,6 +77,12 @@ class BoxCar(RollingStock):
         if self.current_commodity is not None:
             self.is_cleaned = False
 
+        if self.tare_weight_lb == 0.0:
+            if self.boxcar_type == BoxCarType.REFRIGERATED:
+                self.tare_weight_lb = 102_000.0
+            else:
+                self.tare_weight_lb = 73_000.0
+
     @property
     def operational_length_ft(self) -> float:
         return 55.0

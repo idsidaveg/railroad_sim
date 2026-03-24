@@ -11,7 +11,10 @@ from railroad_sim.domain.network.consist_movement_types import (
 from railroad_sim.domain.network.footprint_service import FootprintService
 from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
 from railroad_sim.domain.network.rail_network import RailNetwork
-from railroad_sim.domain.network.topology_movement_enums import MovementOptionKind
+from railroad_sim.domain.network.topology_movement_enums import (
+    MovementBlockReason,
+    MovementOptionKind,
+)
 from railroad_sim.domain.network.topology_movement_service import (
     TopologyMovementService,
 )
@@ -23,7 +26,7 @@ class _WalkResult:
     position: NetworkPosition
     actual_distance_ft: float
     final_direction: TravelDirection
-    stop_reason: str | None = None
+    stop_reason: MovementBlockReason | None = None
 
 
 class ConsistMovementService:
@@ -94,6 +97,70 @@ class ConsistMovementService:
                 context="derive rear_position from moved front_position",
             )
 
+            bridge_length_ft = self._topology.bridge_length_for_track(
+                advanced_front.position.track_id
+            )
+            max_bridge_gross_weight_lb = (
+                self._topology.max_gross_weight_for_bridge_track(
+                    advanced_front.position.track_id
+                )
+            )
+            entering_bridge_from_non_bridge = (
+                bridge_length_ft is not None
+                and extent.front_position.track_id != advanced_front.position.track_id
+            )
+            bridge_cannot_contain_consist = (
+                bridge_length_ft is not None
+                and consist_length_ft > bridge_length_ft
+                and derived_rear.position.track_id != advanced_front.position.track_id
+            )
+            bridge_gross_weight_exceeded = (
+                max_bridge_gross_weight_lb is not None
+                and extent.consist.gross_weight_lb > max_bridge_gross_weight_lb
+            )
+            stopped_at_bridge_limit = (
+                advanced_front.stop_reason == MovementBlockReason.ROUTE_MISALIGNED
+            )
+            # length refusal block
+            if (
+                entering_bridge_from_non_bridge
+                and bridge_cannot_contain_consist
+                and stopped_at_bridge_limit
+            ):
+                blocked_footprint = self._footprint_service.footprint_for_extent(extent)
+                blocked_turnout_states = self._turnout_evaluator.evaluate_extent(
+                    extent=extent,
+                    turnout_windows_by_key=turnout_windows_by_key,
+                )
+                return MovementExecutionResult(
+                    requested_distance_ft=distance_ft,
+                    actual_distance_ft=0.0,
+                    prior_extent=extent,
+                    new_extent=extent,
+                    footprint=blocked_footprint,
+                    turnout_states=blocked_turnout_states,
+                    movement_limited=True,
+                    stop_reason=MovementBlockReason.TURNTABLE_BRIDGE_LENGTH_EXCEEDED,
+                )
+
+            # gross weight refusal block
+            if entering_bridge_from_non_bridge and bridge_gross_weight_exceeded:
+                blocked_footprint = self._footprint_service.footprint_for_extent(extent)
+                blocked_turnout_states = self._turnout_evaluator.evaluate_extent(
+                    extent=extent,
+                    turnout_windows_by_key=turnout_windows_by_key,
+                )
+                return MovementExecutionResult(
+                    requested_distance_ft=distance_ft,
+                    actual_distance_ft=0.0,
+                    prior_extent=extent,
+                    new_extent=extent,
+                    footprint=blocked_footprint,
+                    turnout_states=blocked_turnout_states,
+                    movement_limited=True,
+                    stop_reason=MovementBlockReason.TURNTABLE_BRIDGE_WEIGHT_EXCEEDED,
+                )
+
             new_extent = ConsistExtent(
                 consist=extent.consist,
                 rear_position=derived_rear.position,
@@ -103,7 +170,7 @@ class ConsistMovementService:
 
             actual_distance_ft = advanced_front.actual_distance_ft
             movement_limited = actual_distance_ft < distance_ft
-            stop_reason = advanced_front.stop_reason
+            stop_reason = advanced_front.stop_reason or MovementBlockReason.NONE
 
         elif command is MoveCommand.REVERSE:
             reverse_direction = self._opposite_direction(current_direction)
@@ -130,7 +197,7 @@ class ConsistMovementService:
 
             actual_distance_ft = advanced_rear.actual_distance_ft
             movement_limited = actual_distance_ft < distance_ft
-            stop_reason = advanced_rear.stop_reason
+            stop_reason = advanced_rear.stop_reason or MovementBlockReason.NONE
 
         else:
             raise ValueError(f"Unsupported MoveCommand: {command}")
@@ -221,7 +288,7 @@ class ConsistMovementService:
                     position=current,
                     actual_distance_ft=moved_ft,
                     final_direction=current_direction,
-                    stop_reason="no_continuation",
+                    stop_reason=MovementBlockReason.NO_PATH,
                 )
 
             if continuation.stop_reason is not None:
@@ -271,7 +338,7 @@ class ConsistMovementService:
     class _Continuation:
         position: NetworkPosition
         direction: TravelDirection
-        stop_reason: str | None = None
+        stop_reason: MovementBlockReason | None = None
 
     def _resolve_continuation(
         self,
@@ -295,7 +362,7 @@ class ConsistMovementService:
                     offset_ft=track.length_ft if exit_end is TrackEnd.B else 0.0,
                 ),
                 direction=TravelDirection.STATIONARY,
-                stop_reason="boundary_exit",
+                stop_reason=MovementBlockReason.BOUNDARY_EXIT,
             )
 
         aligned_track_options = [
@@ -314,7 +381,7 @@ class ConsistMovementService:
                     offset_ft=track.length_ft if exit_end is TrackEnd.B else 0.0,
                 ),
                 direction=TravelDirection.STATIONARY,
-                stop_reason="no_aligned_route",
+                stop_reason=MovementBlockReason.ROUTE_MISALIGNED,
             )
 
         if len(aligned_track_options) > 1:
@@ -324,7 +391,7 @@ class ConsistMovementService:
                     offset_ft=track.length_ft if exit_end is TrackEnd.B else 0.0,
                 ),
                 direction=TravelDirection.STATIONARY,
-                stop_reason="ambiguous_continuation",
+                stop_reason=MovementBlockReason.AMBIGUOUS_CONTINUATION,
             )
 
         option = aligned_track_options[0]
@@ -338,7 +405,7 @@ class ConsistMovementService:
                     offset_ft=track.length_ft if exit_end is TrackEnd.B else 0.0,
                 ),
                 direction=TravelDirection.STATIONARY,
-                stop_reason="invalid_track_option",
+                stop_reason=MovementBlockReason.INVALID_TRACK_OPTION,
             )
 
         destination_track = destination.track

@@ -14,6 +14,9 @@ from railroad_sim.domain.network.consist_movement_types import MoveCommand
 from railroad_sim.domain.network.footprint_service import FootprintService
 from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
 from railroad_sim.domain.network.rail_network import RailNetwork
+from railroad_sim.domain.network.topology_movement_enums import (
+    MovementBlockReason,
+)
 from railroad_sim.domain.network.topology_movement_service import (
     TopologyMovementService,
 )
@@ -170,6 +173,72 @@ def build_turntable_capacity_scenario_network() -> tuple[
     turntable = Turntable(
         name="TT",
         bridge_length_ft=150.0,
+        max_gross_weight_lb=600_000.0,
+        bridge_track_id=bridge.track_id,
+        approach_track_id=approach.track_id,
+        stall_track_ids=(stall_1.track_id,),
+    )
+
+    connection = TurntableConnection(
+        turntable=turntable,
+        bridge_track=bridge,
+        connected_tracks_by_id={
+            approach.track_id: approach,
+            stall_1.track_id: stall_1,
+        },
+    )
+
+    return network, lead, approach, bridge, stall_1, turntable, connection
+
+
+def build_turntable_insufficient_capacity_scenario_network():
+    """
+    Same topology as the valid-capacity turntable scenario, but with a bridge
+    that is too short for the test consist.
+
+        lead:B <-> approach:B
+        approach:A <-> bridge:A   when aligned to approach
+        stall_1:A <-> bridge:B    when aligned to stall_1
+
+    Track lengths:
+    - lead     = 200 ft
+    - approach = 150 ft
+    - bridge   = 100 ft
+    - stall_1  = 200 ft
+
+    The standard locomotive + boxcar consist is 128 ft total, so the bridge
+    cannot fully contain it.
+    """
+    network = RailNetwork(name="turntable-capacity-scenario")
+
+    lead = make_track("Lead", length_ft=200.0)
+    approach = make_track("Approach", length_ft=150.0)
+    bridge = make_track("Bridge", length_ft=100.0)
+    stall_1 = make_track("Stall 1", length_ft=200.0)
+
+    for track in (lead, approach, bridge, stall_1):
+        network.add_track(track)
+
+    #  Fixed connection:
+    # lead:B <-> approach:B
+    #
+    # This is intentional. The turntable connection to the approach is at
+    # approach:A, so entering the approach from B allows a forward move to
+    # continue toward A and then onto the bridge when aligned.
+    lead_to_approach_junction, _ = make_connection_junction(
+        name="LEAD_APPROACH",
+        left_track=lead,
+        left_end=TrackEnd.B,
+        right_track=approach,
+        right_end=TrackEnd.B,
+        aligned=True,
+    )
+    network.add_junction(lead_to_approach_junction)
+
+    turntable = Turntable(
+        name="TT",
+        bridge_length_ft=100.0,
+        max_gross_weight_lb=600_000.0,
         bridge_track_id=bridge.track_id,
         approach_track_id=approach.track_id,
         stall_track_ids=(stall_1.track_id,),
@@ -278,7 +347,7 @@ def test_chained_forward_moves_through_turntable_with_valid_bridge_capacity() ->
 
     assert phase_1.actual_distance_ft == pytest.approx(80.0)
     assert phase_1.movement_limited is False
-    assert phase_1.stop_reason is None
+    assert phase_1.stop_reason is MovementBlockReason.NONE
 
     assert phase_1.new_extent.rear_position.track_id == lead.track_id
     assert phase_1.new_extent.rear_position.offset_ft == pytest.approx(100.0)
@@ -312,8 +381,12 @@ def test_chained_forward_moves_through_turntable_with_valid_bridge_capacity() ->
     # This is the key checkpoint:
     # the entire consist is now fully on the bridge and clear of approach.
     # -----------------------------------------------------------------
+    # old code before the align_to correction: turntable.align_to(approach.track_id)
+    # Align turntable to approach WITHOUT safety check
+    # (initial alignment state)
     turntable.align_to(approach.track_id)
 
+    # Now move onto the bridge
     phase_2 = service.move_extent(
         extent=phase_1.new_extent,
         command=MoveCommand.FORWARD,
@@ -323,7 +396,7 @@ def test_chained_forward_moves_through_turntable_with_valid_bridge_capacity() ->
 
     assert phase_2.actual_distance_ft == pytest.approx(260.0)
     assert phase_2.movement_limited is False
-    assert phase_2.stop_reason is None
+    assert phase_2.stop_reason is MovementBlockReason.NONE
 
     assert phase_2.new_extent.rear_position.track_id == bridge.track_id
     assert phase_2.new_extent.rear_position.offset_ft == pytest.approx(10.0)
@@ -373,7 +446,8 @@ def test_chained_forward_moves_through_turntable_with_valid_bridge_capacity() ->
     # not rear_offset_ft.
     #
     # This was previously a bug where total length was undercounted.
-    turntable.align_to(stall_1.track_id)
+    # old code: turntable.align_to(stall_1.track_id)
+    turntable.align_to(stall_1.track_id, protected_extent=phase_2.new_extent)
 
     phase_3 = service.move_extent(
         extent=phase_2.new_extent,
@@ -384,7 +458,7 @@ def test_chained_forward_moves_through_turntable_with_valid_bridge_capacity() ->
 
     assert phase_3.actual_distance_ft == pytest.approx(40.0)
     assert phase_3.movement_limited is False
-    assert phase_3.stop_reason is None
+    assert phase_3.stop_reason is MovementBlockReason.NONE
 
     assert phase_3.new_extent.rear_position.track_id == bridge.track_id
     assert phase_3.new_extent.rear_position.offset_ft == pytest.approx(50.0)
@@ -401,4 +475,90 @@ def test_chained_forward_moves_through_turntable_with_valid_bridge_capacity() ->
     assert phase_3.footprint.occupied_track_ids == (
         bridge.track_id,
         stall_1.track_id,
+    )
+
+
+def test_move_onto_turntable_bridge_is_rejected_when_consist_exceeds_bridge_length() -> (
+    None
+):
+    network, lead, approach, bridge, stall_1, turntable, connection = (
+        build_turntable_insufficient_capacity_scenario_network()
+    )
+    service, footprint_service = build_service(
+        network,
+        turntable_connections=(connection,),
+    )
+
+    consist = build_locomotive_boxcar_consist()
+    consist_length = consist.operational_length_ft
+
+    assert consist_length == pytest.approx(128.0)
+    assert turntable.bridge_length_ft == pytest.approx(100.0)
+    assert consist_length > turntable.bridge_length_ft
+
+    extent = make_extent(
+        consist=consist,
+        rear_track=lead,
+        rear_offset_ft=20.0,
+        front_track=lead,
+        front_offset_ft=148.0,
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    initial_footprint = footprint_service.footprint_for_extent(extent)
+    assert initial_footprint.track_count == 1
+    assert initial_footprint.total_occupied_length_ft == pytest.approx(128.0)
+    assert initial_footprint.occupied_track_ids == (lead.track_id,)
+
+    # Phase 1: lead -> approach
+    phase_1 = service.move_extent(
+        extent=extent,
+        command=MoveCommand.FORWARD,
+        distance_ft=80.0,
+        turnout_windows_by_key={},
+    )
+
+    assert phase_1.actual_distance_ft == pytest.approx(80.0)
+    assert phase_1.movement_limited is False
+    assert phase_1.stop_reason is MovementBlockReason.NONE
+
+    assert phase_1.new_extent.rear_position.track_id == lead.track_id
+    assert phase_1.new_extent.rear_position.offset_ft == pytest.approx(100.0)
+    assert phase_1.new_extent.front_position.track_id == approach.track_id
+    assert phase_1.new_extent.front_position.offset_ft == pytest.approx(122.0)
+    assert phase_1.new_extent.travel_direction is TravelDirection.TOWARD_A
+
+    assert phase_1.footprint.track_count == 2
+    assert phase_1.footprint.total_occupied_length_ft == pytest.approx(128.0)
+    assert phase_1.footprint.occupied_track_ids == (
+        lead.track_id,
+        approach.track_id,
+    )
+
+    # Phase 2: align to approach, then attempt move onto bridge
+    # old code before align_to correction: turntable.align_to(approach.track_id)
+    # Align turntable to approach WITHOUT safety check
+    # (initial alignment state)
+    turntable.align_to(approach.track_id)
+
+    # Now move onto the bridge
+    phase_2 = service.move_extent(
+        extent=phase_1.new_extent,
+        command=MoveCommand.FORWARD,
+        distance_ft=260.0,
+        turnout_windows_by_key={},
+    )
+
+    assert phase_2.actual_distance_ft == pytest.approx(0.0)
+    assert phase_2.movement_limited is True
+    assert phase_2.stop_reason is MovementBlockReason.TURNTABLE_BRIDGE_LENGTH_EXCEEDED
+
+    assert phase_2.new_extent == phase_1.new_extent
+    assert phase_2.prior_extent == phase_1.new_extent
+
+    assert phase_2.footprint.track_count == 2
+    assert phase_2.footprint.total_occupied_length_ft == pytest.approx(128.0)
+    assert phase_2.footprint.occupied_track_ids == (
+        lead.track_id,
+        approach.track_id,
     )
