@@ -1223,3 +1223,55 @@ def test_move_reverse_crosses_from_bridge_back_to_approach_when_aligned_to_appro
     assert result.footprint.track_count == 1
     assert result.footprint.total_occupied_length_ft == 110.0
     assert result.footprint.occupied_track_ids == (bridge.track_id,)
+
+
+def test_move_forward_stops_at_contact_and_reports_contact_metadata() -> None:
+    network, track = build_single_track_network(length_ft=1000.0)
+    service = build_service(network)
+
+    consist_a = build_test_consist(car_count=2)
+    consist_b = build_test_consist(car_count=2)
+
+    extent_a = make_extent(
+        consist=consist_a,
+        rear_track=track,
+        rear_offset_ft=100.0,
+        front_track=track,
+        front_offset_ft=210.0,
+        travel_direction=TravelDirection.TOWARD_B,
+    )
+
+    extent_b = make_extent(
+        consist=consist_b,
+        rear_track=track,
+        rear_offset_ft=400.0,
+        front_track=track,
+        front_offset_ft=510.0,
+        travel_direction=TravelDirection.STATIONARY,
+    )
+
+    footprint_b = service._footprint_service.footprint_for_extent(extent_b)
+
+    result = service.move_extent(
+        extent=extent_a,
+        command=MoveCommand.FORWARD,
+        distance_ft=300.0,
+        turnout_windows_by_key={},
+        active_footprints=(footprint_b,),
+    )
+
+    assert result.requested_distance_ft == 300.0
+    assert result.actual_distance_ft == 190.0
+    assert result.movement_limited is True
+    assert result.stop_reason is MovementBlockReason.CONTACT
+
+    assert result.contact_occurred is True
+    assert result.contact_with_consist_id == consist_b.consist_id
+
+    assert result.new_extent.rear_position.track_id == track.track_id
+    assert result.new_extent.rear_position.offset_ft == 290.0
+    assert result.new_extent.front_position.track_id == track.track_id
+    assert result.new_extent.front_position.offset_ft == 400.0
+
+    assert result.footprint.track_count == 1
+    assert result.footprint.total_occupied_length_ft == 110.0

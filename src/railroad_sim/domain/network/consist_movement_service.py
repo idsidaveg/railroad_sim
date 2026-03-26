@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from railroad_sim.domain.enums import TrackEnd, TravelDirection
 from railroad_sim.domain.junction import TrackEndpoint
@@ -35,6 +36,13 @@ class _WalkResult:
     actual_distance_ft: float
     final_direction: TravelDirection
     stop_reason: MovementBlockReason | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ContactProbeResult:
+    max_distance_ft: float
+    contact_occurred: bool = False
+    contact_with_consist_id: UUID | None = None
 
 
 class ConsistMovementService:
@@ -80,7 +88,6 @@ class ConsistMovementService:
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
-
     def move_extent(
         self,
         *,
@@ -92,6 +99,21 @@ class ConsistMovementService:
     ) -> MovementExecutionResult:
         if distance_ft < 0:
             raise ValueError("distance_ft must be >= 0")
+
+        requested_distance_ft = distance_ft
+        contact_occurred = False
+        contact_with_consist_id: UUID | None = None
+
+        if active_footprints:
+            probe_result = self._compute_max_distance_before_contact(
+                extent=extent,
+                command=command,
+                requested_distance_ft=distance_ft,
+                active_footprints=active_footprints,
+            )
+            distance_ft = probe_result.max_distance_ft
+            contact_occurred = probe_result.contact_occurred
+            contact_with_consist_id = probe_result.contact_with_consist_id
 
         consist_length_ft = extent.consist.operational_length_ft
         current_direction = self._normalized_travel_direction(extent)
@@ -134,7 +156,7 @@ class ConsistMovementService:
             stopped_at_bridge_limit = (
                 advanced_front.stop_reason == MovementBlockReason.ROUTE_MISALIGNED
             )
-            # length refusal block
+
             if (
                 entering_bridge_from_non_bridge
                 and bridge_cannot_contain_consist
@@ -146,7 +168,7 @@ class ConsistMovementService:
                     turnout_windows_by_key=turnout_windows_by_key,
                 )
                 return MovementExecutionResult(
-                    requested_distance_ft=distance_ft,
+                    requested_distance_ft=requested_distance_ft,
                     actual_distance_ft=0.0,
                     prior_extent=extent,
                     new_extent=extent,
@@ -156,7 +178,6 @@ class ConsistMovementService:
                     stop_reason=MovementBlockReason.TURNTABLE_BRIDGE_LENGTH_EXCEEDED,
                 )
 
-            # gross weight refusal block
             if entering_bridge_from_non_bridge and bridge_gross_weight_exceeded:
                 blocked_footprint = self._footprint_service.footprint_for_extent(extent)
                 blocked_turnout_states = self._turnout_evaluator.evaluate_extent(
@@ -164,7 +185,7 @@ class ConsistMovementService:
                     turnout_windows_by_key=turnout_windows_by_key,
                 )
                 return MovementExecutionResult(
-                    requested_distance_ft=distance_ft,
+                    requested_distance_ft=requested_distance_ft,
                     actual_distance_ft=0.0,
                     prior_extent=extent,
                     new_extent=extent,
@@ -182,8 +203,10 @@ class ConsistMovementService:
             )
 
             actual_distance_ft = advanced_front.actual_distance_ft
-            movement_limited = actual_distance_ft < distance_ft
+            movement_limited = actual_distance_ft < requested_distance_ft
             stop_reason = advanced_front.stop_reason or MovementBlockReason.NONE
+            if contact_occurred:
+                stop_reason = MovementBlockReason.CONTACT
 
         elif command is MoveCommand.REVERSE:
             reverse_direction = self._opposite_direction(current_direction)
@@ -209,8 +232,11 @@ class ConsistMovementService:
             )
 
             actual_distance_ft = advanced_rear.actual_distance_ft
-            movement_limited = actual_distance_ft < distance_ft
+            movement_limited = actual_distance_ft < requested_distance_ft
             stop_reason = advanced_rear.stop_reason or MovementBlockReason.NONE
+
+            if contact_occurred:
+                stop_reason = MovementBlockReason.CONTACT
 
         else:
             raise ValueError(f"Unsupported MoveCommand: {command}")
@@ -225,10 +251,11 @@ class ConsistMovementService:
         if interaction.relationship is ContactRelationship.OVERLAP:
             blocked_footprint = self._footprint_service.footprint_for_extent(extent)
             blocked_turnout_states = self._turnout_evaluator.evaluate_extent(
-                extent=extent, turnout_windows_by_key=turnout_windows_by_key
+                extent=extent,
+                turnout_windows_by_key=turnout_windows_by_key,
             )
             return MovementExecutionResult(
-                requested_distance_ft=distance_ft,
+                requested_distance_ft=requested_distance_ft,
                 actual_distance_ft=0.0,
                 prior_extent=extent,
                 new_extent=extent,
@@ -236,6 +263,8 @@ class ConsistMovementService:
                 turnout_states=blocked_turnout_states,
                 movement_limited=True,
                 stop_reason=MovementBlockReason.TRACK_OCCUPIED,
+                contact_occurred=contact_occurred,
+                contact_with_consist_id=contact_with_consist_id,
             )
 
         turnout_states = self._turnout_evaluator.evaluate_extent(
@@ -244,7 +273,7 @@ class ConsistMovementService:
         )
 
         return MovementExecutionResult(
-            requested_distance_ft=distance_ft,
+            requested_distance_ft=requested_distance_ft,
             actual_distance_ft=actual_distance_ft,
             prior_extent=extent,
             new_extent=new_extent,
@@ -252,7 +281,65 @@ class ConsistMovementService:
             turnout_states=turnout_states,
             movement_limited=movement_limited,
             stop_reason=stop_reason,
+            contact_occurred=contact_occurred,
+            contact_with_consist_id=contact_with_consist_id,
         )
+
+    def _simulate_extent_without_contact_check(
+        self,
+        *,
+        extent: ConsistExtent,
+        command: MoveCommand,
+        distance_ft: float,
+    ) -> ConsistExtent:
+        consist_length_ft = extent.consist.operational_length_ft
+        current_direction = self._normalized_travel_direction(extent)
+
+        if command is MoveCommand.FORWARD:
+            advanced_front = self._walk_position(
+                start=extent.front_position,
+                direction=current_direction,
+                distance_ft=distance_ft,
+            )
+
+            derived_rear = self._walk_position_strict(
+                start=advanced_front.position,
+                direction=self._opposite_direction(advanced_front.final_direction),
+                distance_ft=consist_length_ft,
+                context="derive rear_position from moved front_position",
+            )
+
+            return ConsistExtent(
+                consist=extent.consist,
+                rear_position=derived_rear.position,
+                front_position=advanced_front.position,
+                travel_direction=advanced_front.final_direction,
+            )
+
+        if command is MoveCommand.REVERSE:
+            reverse_direction = self._opposite_direction(current_direction)
+
+            advanced_rear = self._walk_position(
+                start=extent.rear_position,
+                direction=reverse_direction,
+                distance_ft=distance_ft,
+            )
+
+            derived_front = self._walk_position_strict(
+                start=advanced_rear.position,
+                direction=self._opposite_direction(advanced_rear.final_direction),
+                distance_ft=consist_length_ft,
+                context="derive front_position from moved rear_position",
+            )
+
+            return ConsistExtent(
+                consist=extent.consist,
+                rear_position=advanced_rear.position,
+                front_position=derived_front.position,
+                travel_direction=advanced_rear.final_direction,
+            )
+
+        raise ValueError(f"Unsupported MoveCommand: {command}")
 
     # -------------------------------------------------------------------------
     # Position walking
@@ -501,3 +588,61 @@ class ConsistMovementService:
 
     def _get_track(self, track_id):
         return self._network.get_track(track_id)
+
+    def _compute_max_distance_before_contact(
+        self,
+        *,
+        extent: ConsistExtent,
+        command: MoveCommand,
+        requested_distance_ft: float,
+        active_footprints: tuple[ConsistFootprint, ...],
+    ) -> _ContactProbeResult:
+        """
+        Returns the maximum safe distance before CONTACT or OVERLAP occurs.
+
+        Uses incremental probing without recursively calling move_extent().
+        """
+
+        step_ft = 1.0
+        distance_traveled = 0.0
+        current_extent = extent
+
+        while distance_traveled < requested_distance_ft:
+            next_step_ft = min(step_ft, requested_distance_ft - distance_traveled)
+
+            candidate_extent = self._simulate_extent_without_contact_check(
+                extent=current_extent,
+                command=command,
+                distance_ft=next_step_ft,
+            )
+            candidate_footprint = self._footprint_service.footprint_for_extent(
+                candidate_extent
+            )
+
+            interaction = self._contact_resolution.classify_against_active_footprints(
+                moving_footprint=candidate_footprint,
+                active_footprints=active_footprints,
+            )
+
+            if interaction.relationship is ContactRelationship.CONTACT:
+                return _ContactProbeResult(
+                    max_distance_ft=distance_traveled + next_step_ft,
+                    contact_occurred=True,
+                    contact_with_consist_id=interaction.other_consist_id,
+                )
+
+            if interaction.relationship is ContactRelationship.OVERLAP:
+                return _ContactProbeResult(
+                    max_distance_ft=distance_traveled,
+                    contact_occurred=False,
+                    contact_with_consist_id=None,
+                )
+
+            current_extent = candidate_extent
+            distance_traveled += next_step_ft
+
+        return _ContactProbeResult(
+            max_distance_ft=requested_distance_ft,
+            contact_occurred=False,
+            contact_with_consist_id=None,
+        )

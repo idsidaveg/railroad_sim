@@ -11,6 +11,7 @@ class MovementOptionKind(str, Enum):
 class MovementBlockReason(str, Enum):
     # Topology / routing
     NONE = "none"
+    CONTACT = "contact"
     NO_PATH = "no_path"
     TRACK_CONDITION = "track_condition"
     ROUTE_MISALIGNED = "route_misaligned"

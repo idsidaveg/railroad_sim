@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict
+from uuid import UUID
 
 from railroad_sim.domain.network.position_types import (
     ConsistExtent,
@@ -95,6 +96,8 @@ class MovementExecutionResult:
 
     movement_limited: bool = False
     stop_reason: MovementBlockReason = MovementBlockReason.NONE
+    contact_occurred: bool = False
+    contact_with_consist_id: UUID | None = None
 
     # -------------------------
     # Convenience properties
