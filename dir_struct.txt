@@ -1,0 +1,29 @@
+.
+├── devtools
+├── docs
+│   ├── architecture
+│   ├── dev_notes
+│   └── ideas
+├── htmlcov
+├── src
+│   └── railroad_sim
+│       ├── application
+│       ├── domain
+│       │   ├── dispatch
+│       │   ├── equipment
+│       │   ├── network
+│       │   └── yard
+│       └── presentation
+│           ├── ascii
+│           └── gui
+│               └── tkinter
+└── tests
+    ├── domain
+    │   ├── dispatch
+    │   ├── equipment
+    │   ├── network
+    │   └── yard
+    ├── scenarios
+    └── support
+
+27 directories

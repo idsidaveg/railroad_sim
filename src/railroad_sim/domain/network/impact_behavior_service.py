@@ -42,6 +42,8 @@ class ImpactBehaviorService:
         impact_result: ImpactResult,
         moved_mass_lb: float,
         other_mass_lb: float,
+        moved_car_count: int | None = None,
+        other_car_count: int | None = None,
     ) -> ImpactBehaviorResult:
         if moved_mass_lb < 0:
             raise ValueError("moved_mass_lb must be >= 0")
@@ -113,7 +115,10 @@ class ImpactBehaviorService:
                 consist_id=impact_result.moved_consist_id,
                 bounce_distance_ft=0.0,
                 push_through_distance_ft=round(base_push_ft * moved_share, 3),
-                ripple_depth=self._allocate_ripple_depth(base_ripple, moved_share),
+                ripple_depth=self._cap_ripple_depth(
+                    self._allocate_ripple_depth(base_ripple, moved_share),
+                    moved_car_count,
+                ),
             )
             other_behavior = ConsistImpactBehavior(
                 consist_id=impact_result.other_consist_id
@@ -121,7 +126,10 @@ class ImpactBehaviorService:
                 else impact_result.moved_consist_id,
                 bounce_distance_ft=0.0,
                 push_through_distance_ft=round(base_push_ft * other_share, 3),
-                ripple_depth=self._allocate_ripple_depth(base_ripple, other_share),
+                ripple_depth=self._cap_ripple_depth(
+                    self._allocate_ripple_depth(base_ripple, other_share),
+                    other_car_count,
+                ),
             )
 
             return ImpactBehaviorResult(
@@ -144,7 +152,7 @@ class ImpactBehaviorService:
             return 1.0
         if severity_score < 6_000_000.0:
             return 3.0
-        return 6.0
+        return 4.0
 
     def _hard_collision_ripple_depth(self, severity_score: float) -> int:
         if severity_score < 4_000_000.0:
@@ -162,3 +170,15 @@ class ImpactBehaviorService:
         if share < 0.67:
             return base_depth
         return base_depth + 1
+
+    def _cap_ripple_depth(self, ripple_depth: int, car_count: int | None) -> int:
+        if ripple_depth <= 0:
+            return 0
+
+        if car_count is None:
+            return ripple_depth
+
+        if car_count <= 0:
+            return 0
+
+        return min(ripple_depth, car_count)

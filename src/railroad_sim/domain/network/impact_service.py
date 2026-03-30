@@ -25,7 +25,7 @@ class ImpactService:
         closing_speed_mph: float,
         moved_mass_lb: float,
         other_mass_lb: float,
-        hard_collision_speed_mph: float = 10.0,
+        hard_collision_speed_mph: float = 12.0,
     ) -> ImpactResult:
         if closing_speed_mph < 0:
             raise ValueError("closing_speed_mph must be >= 0")

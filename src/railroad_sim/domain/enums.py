@@ -85,6 +85,22 @@ class RollingStockCondition(str, Enum):
     RETIRED = "retired"
 
 
+class DamageRating(str, Enum):
+    """
+    Severity of physical damage resulting from a collision
+    MODERATE:
+        Functional impairment likely. Equipment should be inspected
+        and may require repair before returning to service.
+
+    SEVERE:
+        Significant structural or mechanical damage. Equipment is
+        unsafe for service and must be removed and repaired.
+    """
+
+    MODERATE = "moderate"
+    SEVERE = "severe"
+
+
 class MaintenanceStatus(str, Enum):
     NONE = "none"
     SCHEDULED = "scheduled"

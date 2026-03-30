@@ -4,7 +4,7 @@ from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from railroad_sim.domain.enums import CouplerPosition
+from railroad_sim.domain.enums import CouplerPosition, DamageRating
 from railroad_sim.domain.exceptions import (
     CouplerConnectionError,
     CouplerStateError,
@@ -32,6 +32,7 @@ class Coupler:
     owner: RollingStock
     position: CouplerPosition
     is_damaged: bool = False
+    damage_rating: DamageRating | None = field(default=None, init=False)
     coupler_id_value: InitVar[UUID | None] = None
 
     connected_to: Coupler | None = field(default=None, init=False, repr=False)
@@ -50,6 +51,17 @@ class Coupler:
     def is_connected(self) -> bool:
         """Return True if this coupler is currently connected."""
         return self.connected_to is not None
+
+    def mark_damaged(self, *, damage_rating: DamageRating) -> None:
+        """
+        Mark this coupler as damaged with a severity rating.
+        Allowed ratings:
+        - MODERATE
+        - SEVERE
+        """
+
+        self.is_damaged = True
+        self.damage_rating = damage_rating
 
     def connect(self, other: Coupler) -> None:
         """
@@ -138,10 +150,11 @@ class Coupler:
 
         lines = [
             "Coupler",
-            f"  owner       : {owner_id}",
-            f"  position    : {self.position.name}",
-            f"  coupler_id  : {self.coupler_id}",
-            f"  damaged     : {self.is_damaged}",
+            f"  owner         : {owner_id}",
+            f"  position      : {self.position.name}",
+            f"  coupler_id    : {self.coupler_id}",
+            f"  damaged       : {self.is_damaged}",
+            f"  damage_rating : {self.damage_rating}",
         ]
 
         if self.connected_to is None:

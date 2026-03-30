@@ -17,7 +17,6 @@ class RailNetwork:
     """
 
     name: str
-
     tracks: dict[UUID, Track] = field(default_factory=dict)
     junctions: dict[UUID, Junction] = field(default_factory=dict)
     boundary_connections: dict[UUID, BoundaryConnection] = field(default_factory=dict)

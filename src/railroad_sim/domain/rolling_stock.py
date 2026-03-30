@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from railroad_sim.domain.couplers import Coupler
 from railroad_sim.domain.enums import (
     CouplerPosition,
+    DamageRating,
     EventSeverity,
     MaintenanceStatus,
     RollingStockCondition,
@@ -62,6 +63,7 @@ class RollingStock:
     inspection_due_miles: int | None = field(init=False, default=None)
     inspection_due_date: date | None = field(init=False, default=None)
     restricted_from_service: bool = field(init=False, default=False)
+    damage_rating: DamageRating | None = field(init=False, default=None)
 
     _event_history: list[RollingStockEvent] = field(
         init=False,
@@ -235,6 +237,34 @@ class RollingStock:
             related_train_id=related_train_id,
         )
 
+    def mark_collision_damage(
+        self,
+        *,
+        damage_rating: DamageRating,
+        occurred_at: datetime | None = None,
+        details: str | None = None,
+        location: str | None = None,
+        related_train_id: str | None = None,
+    ) -> None:
+        """
+        Mark this asset as collision damaged with a severity rating
+        Allowed ratings:
+        - MODERATE
+        - SEVERE
+        """
+
+        self.damage_rating = damage_rating
+        self.condition = RollingStockCondition.DAMAGED
+        self.restricted_from_service = True
+
+        self._record_event(
+            RollingStockEventType.DAMAGED,
+            occurred_at=occurred_at,
+            details=details or f"Collision damage recorded: {damage_rating.value}.",
+            location=location,
+            related_train_id=related_train_id,
+        )
+
     def mark_bad_order(
         self,
         *,
@@ -327,6 +357,7 @@ class RollingStock:
         """
         self.condition = RollingStockCondition.IN_SERVICE
         self.restricted_from_service = False
+        self.damage_rating = None
 
         if self.maintenance_status is MaintenanceStatus.OVERDUE:
             self.maintenance_status = MaintenanceStatus.NONE

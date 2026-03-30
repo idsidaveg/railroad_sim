@@ -3,6 +3,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from _impact_debug_view import render_impact_debug_block
+
+from railroad_sim.application.movement_orchestration_service import (
+    MovementOrchestrationService,
+)
+from railroad_sim.application.post_contact_context import PostContactContext
 from railroad_sim.domain.consist import Consist
 from railroad_sim.domain.enums import TrackType, TravelDirection
 from railroad_sim.domain.equipment.boxcar import BoxCar
@@ -11,9 +17,7 @@ from railroad_sim.domain.network.consist_movement_types import MoveCommand
 from railroad_sim.domain.network.contact_resolution_service import (
     ContactResolutionService,
 )
-from railroad_sim.domain.network.coupling_service import CouplingService
 from railroad_sim.domain.network.footprint_service import FootprintService
-from railroad_sim.domain.network.impact_service import ImpactService
 from railroad_sim.domain.network.position_types import ConsistExtent, NetworkPosition
 from railroad_sim.domain.network.rail_network import RailNetwork
 from railroad_sim.domain.network.relative_speed import compute_closing_speed_mph
@@ -46,7 +50,14 @@ def make_extent(consist, track, rear, front, direction):
     )
 
 
-def run_scenario(speed_a, speed_b, label):
+def run_scenario(
+    speed_a: float,
+    speed_b: float,
+    label: str,
+    *,
+    moved_car_count: int = 2,
+    other_car_count: int = 2,
+):
     print(f"\n=== {label} ===\n")
 
     network = RailNetwork(name="Impact Debug Network")
@@ -65,42 +76,58 @@ def run_scenario(speed_a, speed_b, label):
         contact_resolution_service=ContactResolutionService(),
     )
 
-    coupling = CouplingService()
-    impact = ImpactService()
+    # coupling = CouplingService()
+    # impact = ImpactService()
+    # impact_behavior = ImpactBehaviorService()
+    # post_contact = PostContactResolutionService()
+    # impact_damage = ImpactDamageService()
+    orchestrator = MovementOrchestrationService(
+        movement_service=movement,
+    )
 
-    a = build_consist(2)
-    b = build_consist(2)
+    a = build_consist(moved_car_count)
+    b = build_consist(other_car_count)
 
-    extent_a = make_extent(a, track, 100.0, 210.0, TravelDirection.TOWARD_B)
-    extent_b = make_extent(b, track, 400.0, 510.0, TravelDirection.STATIONARY)
+    # Capture pre-contact masses before coupling mutates topology.
+    moved_mass_lb = a.gross_weight_lb
+    other_mass_lb = b.gross_weight_lb
+
+    extent_a = make_extent(
+        a, track, 100.0, 100.0 + a.operational_length_ft, TravelDirection.TOWARD_B
+    )
+    extent_b = make_extent(
+        b, track, 400.0, 400.0 + b.operational_length_ft, TravelDirection.STATIONARY
+    )
 
     footprint_b = footprint.footprint_for_extent(extent_b)
 
-    move_result = movement.move_extent(
+    orchestration_result = orchestrator.execute_move(
         extent=extent_a,
         command=MoveCommand.FORWARD,
         distance_ft=300.0,
         turnout_windows_by_key={},
         active_footprints=(footprint_b,),
+        post_contact_context=PostContactContext(
+            other_consists=(b,),
+            moved_speed_mph=speed_a,
+            other_speed_mph=speed_b,
+            other_direction=TravelDirection.STATIONARY,
+            moved_mass_lb=moved_mass_lb,
+            other_mass_lb=other_mass_lb,
+            moved_car_count=moved_car_count,
+            other_car_count=other_car_count,
+            moved_contact_from_front=True,
+            other_contact_from_front=False,
+        ),
     )
+
+    move_result = orchestration_result.movement_result
+    resolution_result = orchestration_result.post_contact_result
 
     print("Movement:")
-    print(f"  actual_distance: {move_result.actual_distance_ft}")
-    print(f"  stop_reason:     {move_result.stop_reason}")
-    print(f"  contact:         {move_result.contact_occurred}")
-    print()
-
-    coupling_result = coupling.try_couple(
-        movement_result=move_result,
-        other_consists=(b,),
-        moved_speed_mph=speed_a,
-        other_speed_mph=speed_b,
-        other_direction=TravelDirection.STATIONARY,
-    )
-
-    print("Coupling:")
-    print(f"  outcome: {coupling_result.outcome}")
-    print()
+    print(f"   actual_distance: {move_result.actual_distance_ft}")
+    print(f"   stop_reason:     {move_result.stop_reason}")
+    print(f"   contact:         {move_result.contact_occurred}")
 
     closing_speed = compute_closing_speed_mph(
         moved_speed_mph=speed_a,
@@ -109,27 +136,96 @@ def run_scenario(speed_a, speed_b, label):
         other_direction=TravelDirection.STATIONARY,
     )
 
-    # consist b is stationary
-    impact_result = impact.evaluate_from_coupling_result(
-        coupling_result=coupling_result,
-        closing_speed_mph=closing_speed,
-        moved_mass_lb=a.gross_weight_lb,
-        other_mass_lb=b.gross_weight_lb,
+    if resolution_result is None:
+        raise RuntimeError(
+            "Expected post-contact resolution result, but none produced."
+        )
+
+    coupling_result = resolution_result.coupling_result
+    impact_result = resolution_result.impact_result
+    behavior_result = resolution_result.behavior_result
+
+    print("Coupling:")
+    print(f"  outcome: {coupling_result.outcome}")
+
+    print(
+        render_impact_debug_block(
+            movement_result=move_result,
+            closing_speed_mph=closing_speed,
+            impact_result=impact_result,
+            behavior_result=behavior_result,
+            moved_mass_lb=moved_mass_lb,
+            other_mass_lb=other_mass_lb,
+            moved_car_count=moved_car_count,
+            other_car_count=other_car_count,
+        )
     )
 
-    print("Impact:")
-    print(f"  outcome: {impact_result.outcome}")
-    print(f"  severity_score: {impact_result.severity_score}")
-    print()
+    print_damage_state("Moved consist", a)
+    print_damage_state("Other consist", b)
 
     if coupling_result.merged_consist:
+        print()
         print("Merged consist:")
         print(coupling_result.merged_consist.diagram())
+
+
+def print_damage_state(label: str, consist: Consist) -> None:
+    ordered = consist.ordered_equipment()
+
+    print(f"{label} damage state:")
+    print("   order:", " -> ".join(car.equipment_id for car in ordered))
+    for idx, car in enumerate(consist.ordered_equipment(), start=1):
+        print(
+            f"  [{idx}] {car.equipment_id} "
+            f"condition={car.condition} "
+            f"damage_rating={car.damage_rating} "
+            f"front_damaged={car.front_coupler.is_damaged} "
+            f"front_rating={car.front_coupler.damage_rating} "
+            f"rear_damaged={car.rear_coupler.is_damaged} "
+            f"rear_rating={car.rear_coupler.damage_rating}"
+        )
+    print()
 
 
 def main():
     run_scenario(2.0, 0.0, "LOW SPEED (should couple)")
     run_scenario(6.0, 0.0, "HIGH SPEED (should bounce)")
+    run_scenario(
+        6.0,
+        0.0,
+        "ASYMMETRIC MASS (moved lighter, should bounce unevenly)",
+        moved_car_count=1,
+        other_car_count=4,
+    )
+    run_scenario(
+        10.0,
+        0.0,
+        "HIGH SPEED (still bounce, no incident)",
+        moved_car_count=2,
+        other_car_count=2,
+    )
+    run_scenario(
+        12.0,
+        0.0,
+        "HARD COLLISION THRESHOLD CHECK (12 mph)",
+        moved_car_count=2,
+        other_car_count=2,
+    )
+    run_scenario(
+        14.0,
+        0.0,
+        "HARD COLLISION MID-BAND CHECK (14 mph)",
+        moved_car_count=2,
+        other_car_count=2,
+    )
+    run_scenario(
+        21.0,
+        0.0,
+        "HARD COLLISION (incident required)",
+        moved_car_count=2,
+        other_car_count=2,
+    )
 
 
 if __name__ == "__main__":
