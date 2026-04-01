@@ -21,6 +21,7 @@ class WorkbenchApp:
         self._canvas_item_to_object: dict[int, object] = {}
         self.demo_consist: Consist | None = None
         self._selected_item_ids: set[int] = set()
+        self._context_target_obj: object | None = None
         self.demo_track: Track | None = None
         self._object_to_primary_canvas_item: dict[int, int] = {}
         self._track_item_id: int | None = None
@@ -40,6 +41,7 @@ class WorkbenchApp:
 
         self._build_layout()
         self._build_main_menu()
+        self._build_canvas_context_menu()
         self._configure_initial_canvas_region()
         self._draw_demo_scene()
         if self._theme_mode == "light":
@@ -48,28 +50,9 @@ class WorkbenchApp:
             self._set_dark_mode()
         self.root.after(50, self._set_initial_top_pane_split)
 
-    def _configure_initial_canvas_region(self) -> None:
-        """
-        Configure the initial logical workspace larger than the visible viewport.
-        This gives the scrollbars meaningful range even before zoom is added
-        """
-        self.canvas.configure(scrollregion=(0, 0, 2400, 1800))
-        self.canvas.xview_moveto(0.0)
-        self.canvas.yview_moveto(0.0)
-
-    def _set_initial_top_pane_split(self) -> None:
-        """
-        Set the initial top-pane split after the window has been laid out.
-        Leave a narrower inspector on the right to give most width to the canvas
-        """
-        self.root.update_idletasks()
-
-        total_width = self.top_pane.winfo_width()
-        inspector_target_width = 320
-        if total_width <= inspector_target_width + 200:
-            return
-
-        self.top_pane.sashpos(0, total_width - inspector_target_width)
+    # -------------------------
+    # UI layout / startup
+    # -------------------------
 
     def _build_layout(self) -> None:
         main_pane = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
@@ -81,7 +64,6 @@ class WorkbenchApp:
         main_pane.add(self.top_pane, weight=4)
         main_pane.add(bottom_frame, weight=1)
 
-        # scrollbar setup
         canvas_frame = ttk.Frame(self.top_pane)
         self.top_pane.add(canvas_frame, weight=7)
 
@@ -113,7 +95,6 @@ class WorkbenchApp:
 
         canvas_frame.rowconfigure(0, weight=1)
         canvas_frame.columnconfigure(0, weight=1)
-        # end of scrollbar
 
         inspector_frame = ttk.Frame(self.top_pane, width=220)
         self.top_pane.add(inspector_frame, weight=1)
@@ -124,6 +105,7 @@ class WorkbenchApp:
         self.canvas.bind("<Button-1>", self._on_canvas_click)
         self.canvas.bind("<Motion>", self._on_mouse_move)
         self.canvas.bind("<MouseWheel>", self._on_canvas_mousewheel)
+        self.canvas.bind("<Button-3>", self._show_canvas_context_menu)
         self.canvas.bind("<Button-4>", self._on_canvas_mousewheel_linux)
         self.canvas.bind("<Button-5>", self._on_canvas_mousewheel_linux)
 
@@ -151,6 +133,251 @@ class WorkbenchApp:
 
         self.root.config(menu=menubar)
 
+    def _show_canvas_context_menu(self, event) -> None:
+        target_obj = self._get_right_click_target(event)
+        self._context_target_obj = target_obj
+
+        self._build_canvas_context_menu()
+
+        if isinstance(target_obj, Consist):
+            self.log_text.insert(tk.END, "Right-click: Consist\n")
+        elif isinstance(target_obj, RollingStock):
+            self.log_text.insert(tk.END, "Right-click: Car\n")
+        elif isinstance(target_obj, Track):
+            self.log_text.insert(tk.END, "Right-click: Track\n")
+        elif (
+            isinstance(target_obj, tuple) and target_obj and target_obj[0] == "coupler"
+        ):
+            self.log_text.insert(tk.END, "Right-click: Coupler\n")
+        else:
+            self.log_text.insert(tk.END, "Right-click: Canvas\n")
+
+        self.log_text.see(tk.END)
+
+        try:
+            self.canvas_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.canvas_context_menu.grab_release()
+
+    def _get_right_click_target(self, event) -> object | None:
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+
+        item_ids = self.canvas.find_overlapping(
+            canvas_x,
+            canvas_y,
+            canvas_x,
+            canvas_y,
+        )
+
+        for item_id in reversed(item_ids):
+            tags = self.canvas.gettags(item_id)
+            if (
+                "car" in tags
+                or "consist" in tags
+                or "coupler" in tags
+                or "track" in tags
+            ):
+                return self._canvas_item_to_object.get(item_id)
+
+        return None
+
+    def _dismiss_canvas_context_menu(self) -> None:
+        if hasattr(self, "canvas_context_menu"):
+            self.canvas_context_menu.unpost()
+
+    def _get_context_menu_kind(self) -> str:
+        target_obj = self._context_target_obj
+
+        if isinstance(target_obj, Consist):
+            return "consist"
+        if isinstance(target_obj, RollingStock):
+            return "car"
+        if isinstance(target_obj, Track):
+            return "track"
+        if isinstance(target_obj, tuple) and target_obj and target_obj[0] == "coupler":
+            return "coupler"
+
+        return "canvas"
+
+    def _build_canvas_context_menu(self) -> None:
+        menu_kind = self._get_context_menu_kind()
+
+        if hasattr(self, "canvas_context_menu"):
+            self.canvas_context_menu.delete(0, tk.END)
+        else:
+            self.canvas_context_menu = tk.Menu(self.root, tearoff=0)
+
+        object_menu_labels = {
+            "car": "Car",
+            "consist": "Consist",
+            "track": "Track",
+            "coupler": "Coupler",
+        }
+
+        if menu_kind in object_menu_labels:
+            object_label = object_menu_labels[menu_kind]
+            object_menu = self._build_object_context_submenu(menu_kind)
+
+            if object_menu is not None:
+                self.canvas_context_menu.add_cascade(
+                    label=object_label,
+                    menu=object_menu,
+                )
+                self.canvas_context_menu.add_separator()
+
+        self.canvas_context_menu.add_radiobutton(
+            label="Light Mode",
+            variable=self._theme_var,
+            value="light",
+            command=self._set_light_mode,
+        )
+        self.canvas_context_menu.add_radiobutton(
+            label="Dark Mode",
+            variable=self._theme_var,
+            value="dark",
+            command=self._set_dark_mode,
+        )
+
+        self.canvas_context_menu.add_separator()
+        self.canvas_context_menu.add_command(
+            label="Exit",
+            command=self.root.destroy,
+        )
+
+    def _build_object_context_submenu(self, menu_kind: str) -> tk.Menu | None:
+        object_menu = tk.Menu(self.canvas_context_menu, tearoff=0)
+
+        if menu_kind == "car":
+            self._add_inspect_menu_item(object_menu, "Inspect Car")
+            self._add_standard_selection_menu_items(object_menu)
+            return object_menu
+
+        if menu_kind == "consist":
+            self._add_inspect_menu_item(object_menu, "Inspect Consist")
+            object_menu.add_command(
+                label="Show Cars",
+                command=lambda: self._log_context_action("Consist action: Show Cars"),
+            )
+            self._add_standard_selection_menu_items(object_menu)
+            return object_menu
+
+        if menu_kind == "track":
+            self._add_inspect_menu_item(object_menu, "Inspect Track")
+            object_menu.add_command(
+                label="Show Track Details",
+                command=lambda: self._log_context_action(
+                    "Track action: Show Track Details"
+                ),
+            )
+            self._add_standard_selection_menu_items(object_menu)
+            return object_menu
+
+        if menu_kind == "coupler":
+            self._add_inspect_menu_item(object_menu, "Inspect Coupler")
+            object_menu.add_command(
+                label="Show Coupler Details",
+                command=lambda: self._log_context_action(
+                    "Coupler action: Show Coupler Details"
+                ),
+            )
+            self._add_standard_selection_menu_items(object_menu)
+            return object_menu
+
+        return None
+
+    def _log_context_action(self, message: str) -> None:
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+
+    def _add_standard_selection_menu_items(self, menu: tk.Menu) -> None:
+        menu.add_command(
+            label="Select Only",
+            command=self._select_only_context_target,
+        )
+        menu.add_command(
+            label="Add to Selection",
+            command=self._add_context_target_to_selection,
+        )
+        menu.add_command(
+            label="Remove from Selection",
+            command=self._remove_context_target_from_selection,
+        )
+
+    def _add_inspect_menu_item(self, menu: tk.Menu, label: str) -> None:
+        menu.add_command(
+            label=label,
+            command=self._inspect_context_target,
+        )
+
+    def _build_inspector(self, parent: ttk.Frame) -> None:
+        label = ttk.Label(parent, text="Inspector", font=("Arial", 12, "bold"))
+        label.pack(anchor="nw", padx=10, pady=10)
+
+        inspector_text_frame = ttk.Frame(parent)
+        inspector_text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.inspector_text = tk.Text(
+            inspector_text_frame,
+            height=20,
+            wrap="word",
+            font=("Arial", 10),
+        )
+        self.inspector_scrollbar = ttk.Scrollbar(
+            inspector_text_frame,
+            orient=tk.VERTICAL,
+            command=self.inspector_text.yview,
+        )
+
+        self.inspector_text.configure(yscrollcommand=self.inspector_scrollbar.set)
+
+        self.inspector_text.grid(row=0, column=0, sticky="nsew")
+        self.inspector_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        inspector_text_frame.rowconfigure(0, weight=1)
+        inspector_text_frame.columnconfigure(0, weight=1)
+
+    def _build_log(self, parent: ttk.Frame) -> None:
+        hover_label = ttk.Label(
+            parent,
+            textvariable=self.hover_text,
+            font=("Arial", 10),
+        )
+        hover_label.pack(anchor="nw", padx=19, pady=(5, 0))
+
+        label = ttk.Label(parent, text="Event Log", font=("Arial", 12, "bold"))
+        label.pack(anchor="nw", padx=10, pady=5)
+
+        self.log_text = tk.Text(parent, height=8)
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+    def _configure_initial_canvas_region(self) -> None:
+        """
+        Configure the initial logical workspace larger than the visible viewport.
+        This gives the scrollbars meaningful range even before zoom is added
+        """
+        self.canvas.configure(scrollregion=(0, 0, 2400, 1800))
+        self.canvas.xview_moveto(0.0)
+        self.canvas.yview_moveto(0.0)
+
+    def _set_initial_top_pane_split(self) -> None:
+        """
+        Set the initial top-pane split after the window has been laid out.
+        Leave a narrower inspector on the right to give most width to the canvas
+        """
+        self.root.update_idletasks()
+
+        total_width = self.top_pane.winfo_width()
+        inspector_target_width = 320
+        if total_width <= inspector_target_width + 200:
+            return
+
+        self.top_pane.sashpos(0, total_width - inspector_target_width)
+
+    # -------------------------
+    # Theme
+    # -------------------------
+
     def _set_light_mode(self) -> None:
         self._theme_mode = "light"
         self._theme_var.set("light")
@@ -163,6 +390,8 @@ class WorkbenchApp:
             self.canvas.itemconfigure(item_id, outline="black")
         if self._consist_marker_item_id is not None:
             self.canvas.itemconfigure(self._consist_marker_item_id, outline="gray40")
+
+        self._reapply_selection_highlights()
 
     def _set_dark_mode(self) -> None:
         self._theme_mode = "dark"
@@ -177,7 +406,15 @@ class WorkbenchApp:
         if self._consist_marker_item_id is not None:
             self.canvas.itemconfigure(self._consist_marker_item_id, outline="gray60")
 
+        self._reapply_selection_highlights()
+
+    # -------------------------
+    # Canvas interaction
+    # -------------------------
+
     def _on_canvas_click(self, event) -> None:
+        self._dismiss_canvas_context_menu()
+
         canvas_x = self.canvas.canvasx(event.x)
         canvas_y = self.canvas.canvasy(event.y)
 
@@ -267,6 +504,10 @@ class WorkbenchApp:
             self.canvas.config(cursor="")
 
         self._update_hover_status(hovered_obj)
+
+    # -------------------------
+    # Zoom / viewport
+    # -------------------------
 
     def _on_canvas_mousewheel(self, event) -> None:
         if event.delta > 0:
@@ -359,6 +600,10 @@ class WorkbenchApp:
             scrollregion=(x1 - padding, y1 - padding, x2 + padding, y2 + padding)
         )
 
+    # -------------------------
+    # Selection / highlighting
+    # -------------------------
+
     def _clear_all_selection_highlights(self) -> None:
         for item_id in list(self._selected_item_ids):
             self._remove_highlight_from_item(item_id)
@@ -397,6 +642,22 @@ class WorkbenchApp:
         elif "track" in tags:
             self.canvas.itemconfigure(item_id, fill="cyan", width=5)
 
+    def _reapply_selection_highlights(self) -> None:
+        for item_id in self._selected_item_ids:
+            self._apply_highlight_to_item(item_id)
+
+    def _toggle_item_selection(self, item_id: int) -> None:
+        if item_id in self._selected_item_ids:
+            self._remove_highlight_from_item(item_id)
+            self._selected_item_ids.remove(item_id)
+        else:
+            self._apply_highlight_to_item(item_id)
+            self._selected_item_ids.add(item_id)
+
+    # -------------------------
+    # Inspector / hover text
+    # -------------------------
+
     def _format_selected_object_details(
         self, selected_obj: object, index: int | None = None
     ) -> list[str]:
@@ -417,6 +678,7 @@ class WorkbenchApp:
                 f"    Class: {selected_obj.equipment_class}",
                 f"    Length: {selected_obj.operational_length_ft:.1f} ft",
                 f"    Weight: {selected_obj.gross_weight_lb:.0f} lb",
+                f"    Damage: {selected_obj.damage_rating}",
             ]
 
         if isinstance(selected_obj, Track):
@@ -471,58 +733,118 @@ class WorkbenchApp:
             "\n".join(self._format_selected_object_details(selected_obj))
         )
 
-    def _toggle_item_selection(self, item_id: int) -> None:
-        if item_id in self._selected_item_ids:
-            self._remove_highlight_from_item(item_id)
-            self._selected_item_ids.remove(item_id)
-        else:
-            self._apply_highlight_to_item(item_id)
-            self._selected_item_ids.add(item_id)
+    def _inspect_context_target(self) -> None:
+        target_obj = self._context_target_obj
+
+        if isinstance(target_obj, Consist):
+            equipment = target_obj.ordered_equipment()
+            lines = [
+                "Type: Consist",
+                f"Cars: {len(equipment)}",
+                f"Length: {target_obj.operational_length_ft:.1f} ft",
+                f"Weight: {target_obj.gross_weight_lb:.0f} lb",
+                "",
+                "Equipment:",
+            ]
+            for index, car in enumerate(equipment, start=1):
+                lines.append(
+                    f"  {index}. {car.equipment_id} | {car.equipment_class} | "
+                    f"{car.operational_length_ft:.1f} ft | {car.gross_weight_lb:.0f} lb"
+                )
+            self._update_inspector("\n".join(lines))
+            return
+
+        if isinstance(target_obj, RollingStock):
+            lines = [
+                "Type: Car",
+                f"Equipment ID: {target_obj.equipment_id}",
+                f"Class: {target_obj.equipment_class}",
+                f"Length: {target_obj.operational_length_ft:.1f} ft",
+                f"Weight: {target_obj.gross_weight_lb:.0f} lb",
+            ]
+            self._update_inspector("\n".join(lines))
+            return
+
+        if isinstance(target_obj, Track):
+            lines = [
+                "Type: Track",
+                f"Name: {target_obj.name}",
+                f"Track Type: {target_obj.track_type.value}",
+                f"Length: {target_obj.length_ft:.1f} ft",
+            ]
+            self._update_inspector("\n".join(lines))
+            return
+
+        if isinstance(target_obj, tuple) and target_obj and target_obj[0] == "coupler":
+            _, left_obj, right_obj = target_obj
+            lines = [
+                "Type: Coupler",
+                "Connected: Yes",
+                "",
+                "Between:",
+                f"  Left: {left_obj.equipment_id}",
+                f"  Right: {right_obj.equipment_id}",
+            ]
+            self._update_inspector("\n".join(lines))
+            return
+
+        self._update_inspector("Unknown selection")
+
+    def _select_only_context_target(self) -> None:
+        target_obj = self._context_target_obj
+
+        if target_obj is None:
+            self._clear_all_selection_highlights()
+            self._update_inspector("Unknown selection")
+            return
+
+        primary_item_id = self._object_to_primary_canvas_item.get(id(target_obj))
+        if primary_item_id is None:
+            return
+
+        self._clear_all_selection_highlights()
+        self._selected_item_ids.clear()
+        self._apply_highlight_to_item(primary_item_id)
+        self._selected_item_ids.add(primary_item_id)
+        self._update_inspector_for_selection()
+
+    def _add_context_target_to_selection(self) -> None:
+        target_obj = self._context_target_obj
+
+        if target_obj is None:
+            return
+
+        primary_item_id = self._object_to_primary_canvas_item.get(id(target_obj))
+        if primary_item_id is None:
+            return
+
+        if primary_item_id in self._selected_item_ids:
+            return
+
+        self._apply_highlight_to_item(primary_item_id)
+        self._selected_item_ids.add(primary_item_id)
+        self._update_inspector_for_selection()
+
+    def _remove_context_target_from_selection(self) -> None:
+        target_obj = self._context_target_obj
+
+        if target_obj is None:
+            return
+
+        primary_item_id = self._object_to_primary_canvas_item.get(id(target_obj))
+        if primary_item_id is None:
+            return
+
+        if primary_item_id not in self._selected_item_ids:
+            return
+
+        self._remove_highlight_from_item(primary_item_id)
+        self._selected_item_ids.remove(primary_item_id)
+        self._update_inspector_for_selection()
 
     def _update_inspector(self, text: str) -> None:
         self.inspector_text.delete("1.0", tk.END)
         self.inspector_text.insert(tk.END, text)
-
-    def _build_inspector(self, parent: ttk.Frame) -> None:
-        label = ttk.Label(parent, text="Inspector", font=("Arial", 12, "bold"))
-        label.pack(anchor="nw", padx=10, pady=10)
-
-        inspector_text_frame = ttk.Frame(parent)
-        inspector_text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-        self.inspector_text = tk.Text(
-            inspector_text_frame,
-            height=20,
-            wrap="word",
-            font=("Arial", 10),
-        )
-        self.inspector_scrollbar = ttk.Scrollbar(
-            inspector_text_frame,
-            orient=tk.VERTICAL,
-            command=self.inspector_text.yview,
-        )
-
-        self.inspector_text.configure(yscrollcommand=self.inspector_scrollbar.set)
-
-        self.inspector_text.grid(row=0, column=0, sticky="nsew")
-        self.inspector_scrollbar.grid(row=0, column=1, sticky="ns")
-
-        inspector_text_frame.rowconfigure(0, weight=1)
-        inspector_text_frame.columnconfigure(0, weight=1)
-
-    def _build_log(self, parent: ttk.Frame) -> None:
-        hover_label = ttk.Label(
-            parent,
-            textvariable=self.hover_text,
-            font=("Arial", 10),
-        )
-        hover_label.pack(anchor="nw", padx=19, pady=(5, 0))
-
-        label = ttk.Label(parent, text="Event Log", font=("Arial", 12, "bold"))
-        label.pack(anchor="nw", padx=10, pady=5)
-
-        self.log_text = tk.Text(parent, height=8)
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
     def _update_hover_status(self, obj: object | None) -> None:
         if isinstance(obj, Consist):
@@ -543,8 +865,11 @@ class WorkbenchApp:
         else:
             self.hover_text.set("Hover: None")
 
+    # -------------------------
+    # Demo scene drawing
+    # -------------------------
+
     def _draw_demo_scene(self) -> None:
-        # self.canvas.create_line(80, 120, 500, 120, fill="white", width=4)
         self.demo_track = Track(
             name="Main Track", track_type=TrackType.MAINLINE, length_ft=500.0
         )
