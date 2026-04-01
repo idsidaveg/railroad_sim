@@ -23,7 +23,10 @@ class WorkbenchApp:
         self._selected_item_ids: set[int] = set()
         self.demo_track: Track | None = None
         self._object_to_primary_canvas_item: dict[int, int] = {}
+        self._track_item_id: int | None = None
         self._track_label_item_id: int | None = None
+        self._car_item_ids: list[int] = []
+        self._consist_marker_item_id: int | None = None
 
         self._zoom_scale: float = 1.0
         self._min_zoom_scale: float = 0.50
@@ -31,11 +34,18 @@ class WorkbenchApp:
         self._zoom_step_in: float = 1.10
         self._zoom_step_out: float = 1 / 1.10
 
+        self._theme_mode: str = "light"
+        self._theme_var = tk.StringVar(value=self._theme_mode)
         self.hover_text = tk.StringVar(value="Hover: None")
 
         self._build_layout()
+        self._build_main_menu()
         self._configure_initial_canvas_region()
         self._draw_demo_scene()
+        if self._theme_mode == "light":
+            self._set_light_mode()
+        else:
+            self._set_dark_mode()
         self.root.after(50, self._set_initial_top_pane_split)
 
     def _configure_initial_canvas_region(self) -> None:
@@ -75,9 +85,10 @@ class WorkbenchApp:
         canvas_frame = ttk.Frame(self.top_pane)
         self.top_pane.add(canvas_frame, weight=7)
 
+        canvas_bg = "snow" if self._theme_mode == "light" else "black"
         self.canvas = tk.Canvas(
             canvas_frame,
-            bg="black",
+            bg=canvas_bg,
         )
 
         self.h_scrollbar = ttk.Scrollbar(
@@ -115,6 +126,56 @@ class WorkbenchApp:
         self.canvas.bind("<MouseWheel>", self._on_canvas_mousewheel)
         self.canvas.bind("<Button-4>", self._on_canvas_mousewheel_linux)
         self.canvas.bind("<Button-5>", self._on_canvas_mousewheel_linux)
+
+    def _build_main_menu(self) -> None:
+        menubar = tk.Menu(self.root)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Exit", command=self.root.destroy)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_radiobutton(
+            label="Light Mode",
+            variable=self._theme_var,
+            value="light",
+            command=self._set_light_mode,
+        )
+        view_menu.add_radiobutton(
+            label="Dark Mode",
+            variable=self._theme_var,
+            value="dark",
+            command=self._set_dark_mode,
+        )
+        menubar.add_cascade(label="View", menu=view_menu)
+
+        self.root.config(menu=menubar)
+
+    def _set_light_mode(self) -> None:
+        self._theme_mode = "light"
+        self._theme_var.set("light")
+        self.canvas.configure(bg="snow")
+        if self._track_item_id is not None:
+            self.canvas.itemconfigure(self._track_item_id, fill="black")
+        if self._track_label_item_id is not None:
+            self.canvas.itemconfigure(self._track_label_item_id, fill="black")
+        for item_id in self._car_item_ids:
+            self.canvas.itemconfigure(item_id, outline="black")
+        if self._consist_marker_item_id is not None:
+            self.canvas.itemconfigure(self._consist_marker_item_id, outline="gray40")
+
+    def _set_dark_mode(self) -> None:
+        self._theme_mode = "dark"
+        self._theme_var.set("dark")
+        self.canvas.configure(bg="black")
+        if self._track_item_id is not None:
+            self.canvas.itemconfigure(self._track_item_id, fill="white")
+        if self._track_label_item_id is not None:
+            self.canvas.itemconfigure(self._track_label_item_id, fill="white")
+        for item_id in self._car_item_ids:
+            self.canvas.itemconfigure(item_id, outline="white")
+        if self._consist_marker_item_id is not None:
+            self.canvas.itemconfigure(self._consist_marker_item_id, outline="gray60")
 
     def _on_canvas_click(self, event) -> None:
         canvas_x = self.canvas.canvasx(event.x)
@@ -306,14 +367,23 @@ class WorkbenchApp:
     def _remove_highlight_from_item(self, item_id: int) -> None:
         tags = self.canvas.gettags(item_id)
 
+        if self._theme_mode == "light":
+            car_outline = "black"
+            track_color = "black"
+            consist_outline = "gray40"
+        else:
+            car_outline = "white"
+            track_color = "white"
+            consist_outline = "gray60"
+
         if "car" in tags:
-            self.canvas.itemconfigure(item_id, outline="white", width=2)
+            self.canvas.itemconfigure(item_id, outline=car_outline, width=2)
         elif "coupler" in tags:
             self.canvas.itemconfigure(item_id, fill="yellow", width=4)
         elif "consist" in tags:
-            self.canvas.itemconfigure(item_id, outline="gray60", width=1)
+            self.canvas.itemconfigure(item_id, outline=consist_outline, width=1)
         elif "track" in tags:
-            self.canvas.itemconfigure(item_id, fill="white", width=4)
+            self.canvas.itemconfigure(item_id, fill=track_color, width=4)
 
     def _apply_highlight_to_item(self, item_id: int) -> None:
         tags = self.canvas.gettags(item_id)
@@ -490,8 +560,8 @@ class WorkbenchApp:
         )
         self._canvas_item_to_object[track_item] = self.demo_track
         self._object_to_primary_canvas_item[id(self.demo_track)] = track_item
+        self._track_item_id = track_item
 
-        # new code
         track_label_item = self.canvas.create_text(
             200,
             155,
@@ -504,7 +574,6 @@ class WorkbenchApp:
         self._canvas_item_to_object[track_label_item] = self.demo_track
         self._track_label_item_id = track_label_item
 
-        # old code
         car1 = BoxCar(reporting_mark="DBG", road_number="0001")
         car2 = BoxCar(reporting_mark="DBG", road_number="0002")
         car1.rear_coupler.connect(car2.front_coupler)
@@ -523,9 +592,9 @@ class WorkbenchApp:
         )
 
         car2_item = self.canvas.create_rectangle(
-            360,
+            364,
             160,
-            420,
+            424,
             200,
             fill="steelblue",
             outline="white",
@@ -533,8 +602,10 @@ class WorkbenchApp:
             tags=("car",),
         )
 
+        self._car_item_ids = [car1_item, car2_item]
+
         coupler_item = self.canvas.create_line(
-            356,
+            360,
             180,
             364,
             180,
@@ -544,7 +615,7 @@ class WorkbenchApp:
         )
 
         coupler_hitbox_item = self.canvas.create_rectangle(
-            352,
+            356,
             172,
             368,
             188,
@@ -556,18 +627,23 @@ class WorkbenchApp:
         consist_marker_item = self.canvas.create_rectangle(
             296,
             156,
-            424,
+            428,
             204,
             outline="gray60",
             width=1,
             dash=(4, 2),
             tags=("consist",),
         )
+        self._consist_marker_item_id = consist_marker_item
 
         self._canvas_item_to_object[car1_item] = car1
         self._canvas_item_to_object[car2_item] = car2
-        self._canvas_item_to_object[coupler_item] = ("coupler", car1, car2)
-        self._canvas_item_to_object[coupler_hitbox_item] = ("coupler", car1, car2)
+
+        coupler_obj = ("coupler", car1, car2)
+        self._canvas_item_to_object[coupler_item] = coupler_obj
+        self._canvas_item_to_object[coupler_hitbox_item] = coupler_obj
+        self._object_to_primary_canvas_item[id(coupler_obj)] = coupler_item
+
         self._canvas_item_to_object[consist_marker_item] = self.demo_consist
 
         self._object_to_primary_canvas_item[id(car1)] = car1_item
