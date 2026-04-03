@@ -12,7 +12,7 @@ from railroad_sim.domain.rolling_stock import RollingStock
 from railroad_sim.domain.track import Track
 
 
-class WorkbenchApp:
+class OpsWorkbenchApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Railroad Simulator Workbench")
@@ -22,11 +22,13 @@ class WorkbenchApp:
         self.demo_consist: Consist | None = None
         self._selected_item_ids: set[int] = set()
         self._context_target_obj: object | None = None
+        self._inspector_tree_item_to_object: dict[str, object] = {}
         self.demo_track: Track | None = None
         self._object_to_primary_canvas_item: dict[int, int] = {}
         self._track_item_id: int | None = None
         self._track_label_item_id: int | None = None
         self._car_item_ids: list[int] = []
+        self._car_label_item_ids: list[int] = []  # short labels for rolling stock
         self._consist_marker_item_id: int | None = None
 
         self._zoom_scale: float = 1.0
@@ -38,6 +40,12 @@ class WorkbenchApp:
         self._theme_mode: str = "light"
         self._theme_var = tk.StringVar(value=self._theme_mode)
         self.hover_text = tk.StringVar(value="Hover: None")
+        self.inspector_tree: ttk.Treeview | None = None
+        self._inspector_tree_scrollbar: ttk.Scrollbar | None = None
+        self._hover_tooltip_window: tk.Toplevel | None = None
+        self._hover_tooltip_label: tk.Label | None = None
+        self._hover_tooltip_after_id: str | None = None
+        self._hover_tooltip_target_obj: object | None = None
 
         self._build_layout()
         self._build_main_menu()
@@ -108,6 +116,7 @@ class WorkbenchApp:
         self.canvas.bind("<Button-3>", self._show_canvas_context_menu)
         self.canvas.bind("<Button-4>", self._on_canvas_mousewheel_linux)
         self.canvas.bind("<Button-5>", self._on_canvas_mousewheel_linux)
+        self.canvas.bind("<Leave>", lambda e: self._hide_hover_tooltip())
 
     def _build_main_menu(self) -> None:
         menubar = tk.Menu(self.root)
@@ -257,7 +266,8 @@ class WorkbenchApp:
             self._add_inspect_menu_item(object_menu, "Inspect Consist")
             object_menu.add_command(
                 label="Show Cars",
-                command=lambda: self._log_context_action("Consist action: Show Cars"),
+                # original line to text: command=lambda: self._log_context_action("Consist action: Show Cars"),
+                command=self._show_consist_cars_tree,
             )
             self._add_standard_selection_menu_items(object_menu)
             return object_menu
@@ -311,7 +321,8 @@ class WorkbenchApp:
         )
 
     def _build_inspector(self, parent: ttk.Frame) -> None:
-        label = ttk.Label(parent, text="Inspector", font=("Arial", 12, "bold"))
+        # this builds out the text portion of the inspector
+        label = ttk.Label(parent, text="Inspector", font=("Arial", 10, "bold"))
         label.pack(anchor="nw", padx=10, pady=10)
 
         inspector_text_frame = ttk.Frame(parent)
@@ -334,8 +345,68 @@ class WorkbenchApp:
         self.inspector_text.grid(row=0, column=0, sticky="nsew")
         self.inspector_scrollbar.grid(row=0, column=1, sticky="ns")
 
+        # build out the tree control
+        style = ttk.Style()
+        style.configure(
+            "Inspector.Treeview",
+            font=("Arial", 10),
+            rowheight=18,
+        )
+        style.configure(
+            "Inspector.Treeview.Heading",
+            font=("Arial", 10, "bold"),
+        )
+        self.inspector_tree = ttk.Treeview(
+            inspector_text_frame,
+            columns=("value",),
+            show="tree headings",
+            style="Inspector.Treeview",
+        )
+
+        self.inspector_tree.heading("#0", text="Item")
+        self.inspector_tree.heading("value", text="Value")
+        self.inspector_tree.column("#0", width=150, anchor="w")
+        self.inspector_tree.column("value", width=120, anchor="w")
+
+        self._inspector_tree_scrollbar = ttk.Scrollbar(
+            inspector_text_frame,
+            orient=tk.VERTICAL,
+            command=self.inspector_tree.yview,
+        )
+        self.inspector_tree.configure(yscrollcommand=self._inspector_tree_scrollbar.set)
+        self.inspector_tree.bind(
+            "<<TreeviewSelect>>",
+            self._on_inspector_tree_select,
+        )
+        self.inspector_tree.grid(row=0, column=0, sticky="nsew")
+        self._inspector_tree_scrollbar.grid(row=0, column=1, sticky="ns")
+        # hide both tree widget and scrollbar
+        self.inspector_tree.grid_remove()
+        self._inspector_tree_scrollbar.grid_remove()
+
         inspector_text_frame.rowconfigure(0, weight=1)
         inspector_text_frame.columnconfigure(0, weight=1)
+
+    # show the inspector text box
+    def _show_text_inspector(self) -> None:
+        self.inspector_text.grid()
+        self.inspector_scrollbar.grid()
+
+        if self.inspector_tree is not None:
+            self.inspector_tree.grid_remove()
+        if self._inspector_tree_scrollbar is not None:
+            self._inspector_tree_scrollbar.grid_remove()
+
+    # show the inspector tree, called when we want to see what cars is in the Consist
+    # default state on this is the tree is hidden when the app loads
+    def _show_tree_inspector(self) -> None:
+        self.inspector_text.grid_remove()
+        self.inspector_scrollbar.grid_remove()
+
+        if self.inspector_tree is not None:
+            self.inspector_tree.grid()
+        if self._inspector_tree_scrollbar is not None:
+            self._inspector_tree_scrollbar.grid()
 
     def _build_log(self, parent: ttk.Frame) -> None:
         hover_label = ttk.Label(
@@ -350,6 +421,96 @@ class WorkbenchApp:
 
         self.log_text = tk.Text(parent, height=8)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+    def _ensure_hover_tooltip(self) -> None:
+        if self._hover_tooltip_window is not None:
+            return
+
+        self._hover_tooltip_window = tk.Toplevel(self.root)
+        self._hover_tooltip_window.withdraw()
+        self._hover_tooltip_window.overrideredirect(True)
+        self._hover_tooltip_window.attributes("-topmost", True)
+
+        self._hover_tooltip_label = tk.Label(
+            self._hover_tooltip_window,
+            text="",
+            justify="left",
+            anchor="nw",
+            padx=8,
+            pady=6,
+            relief="solid",
+            borderwidth=1,
+            font=("Arial", 9),
+            bg="#fff8dc",
+            fg="black",
+        )
+        self._hover_tooltip_label.pack()
+
+    def _format_hover_tooltip_text(self, obj: object | None) -> str:
+        if isinstance(obj, Consist):
+            return (
+                "Consist\n"
+                f"Cars: {len(obj.ordered_equipment())}\n"
+                f"Length: {obj.operational_length_ft:.1f} ft\n"
+                f"Weight: {obj.gross_weight_lb:.0f} lb"
+            )
+
+        if isinstance(obj, RollingStock):
+            return (
+                "Car\n"
+                f"ID: {obj.equipment_id}\n"
+                f"Class: {obj.equipment_class}\n"
+                f"Length: {obj.operational_length_ft:.1f} ft\n"
+                f"Weight: {obj.gross_weight_lb:.0f} lb"
+            )
+
+        if isinstance(obj, Track):
+            return (
+                "Track\n"
+                f"Name: {obj.name}\n"
+                f"Type: {obj.track_type.value}\n"
+                f"Length: {obj.length_ft:.1f} ft"
+            )
+
+        if isinstance(obj, tuple) and obj and obj[0] == "coupler":
+            _, left_obj, right_obj = obj
+            return (
+                "Coupler\n"
+                "Connected: Yes\n"
+                f"Left: {left_obj.equipment_id}\n"
+                f"Right: {right_obj.equipment_id}"
+            )
+
+        return ""
+
+    def _show_hover_tooltip(self, obj: object, screen_x: int, screen_y: int) -> None:
+        self._ensure_hover_tooltip()
+
+        if self._hover_tooltip_window is None or self._hover_tooltip_label is None:
+            return
+
+        tooltip_text = self._format_hover_tooltip_text(obj)
+        if not tooltip_text:
+            return
+
+        self._hover_tooltip_label.configure(text=tooltip_text)
+
+        x_offset = 16
+        y_offset = 16
+        self._hover_tooltip_window.geometry(
+            f"+{screen_x + x_offset}+{screen_y + y_offset}"
+        )
+        self._hover_tooltip_window.deiconify()
+
+    def _hide_hover_tooltip(self) -> None:
+        if self._hover_tooltip_after_id is not None:
+            self.root.after_cancel(self._hover_tooltip_after_id)
+            self._hover_tooltip_after_id = None
+
+        self._hover_tooltip_target_obj = None
+
+        if self._hover_tooltip_window is not None:
+            self._hover_tooltip_window.withdraw()
 
     def _configure_initial_canvas_region(self) -> None:
         """
@@ -481,6 +642,7 @@ class WorkbenchApp:
 
         if not item_ids:
             self.canvas.config(cursor="")
+            self._hide_hover_tooltip()
             return
 
         hovered_obj = None
@@ -503,7 +665,25 @@ class WorkbenchApp:
         else:
             self.canvas.config(cursor="")
 
-        self._update_hover_status(hovered_obj)
+        if hovered_obj is not None:
+            if hovered_obj != self._hover_tooltip_target_obj:
+                self._hide_hover_tooltip()
+                self._hover_tooltip_target_obj = hovered_obj
+
+                self._hover_tooltip_after_id = self.root.after(
+                    300,
+                    lambda obj=hovered_obj, x=event.x_root, y=event.y_root: (
+                        self._show_hover_tooltip(obj, x, y)
+                    ),
+                )
+            elif self._hover_tooltip_window is not None:
+                x_offset = 16
+                y_offset = 16
+                self._hover_tooltip_window.geometry(
+                    f"+{event.x_root + x_offset}+{event.y_root + y_offset}"
+                )
+        else:
+            self._hide_hover_tooltip()
 
     # -------------------------
     # Zoom / viewport
@@ -588,6 +768,16 @@ class WorkbenchApp:
             self.canvas.itemconfigure(self._track_label_item_id, state="hidden")
         else:
             self.canvas.itemconfigure(self._track_label_item_id, state="normal")
+
+        if not self._car_label_item_ids:
+            return
+
+        if self._zoom_scale < 0.75:
+            for item_id in self._car_label_item_ids:
+                self.canvas.itemconfigure(item_id, state="hidden")
+        else:
+            for item_id in self._car_label_item_ids:
+                self.canvas.itemconfigure(item_id, state="normal")
 
     def _refresh_canvas_scrollregion(self) -> None:
         bbox = self.canvas.bbox("all")
@@ -843,8 +1033,93 @@ class WorkbenchApp:
         self._update_inspector_for_selection()
 
     def _update_inspector(self, text: str) -> None:
+        # if the tree is visible, do not override it
+        if self.inspector_tree is not None and self.inspector_tree.winfo_ismapped():
+            return
+
+        self._show_text_inspector()
         self.inspector_text.delete("1.0", tk.END)
         self.inspector_text.insert(tk.END, text)
+
+    # walk through the consist select and display what is in it
+    def _show_consist_cars_tree(self) -> None:
+        target_obj = self._context_target_obj
+
+        if not isinstance(target_obj, Consist):
+            self._update_inspector("Unknown selection")
+            return
+
+        if self.inspector_tree is None:
+            return
+
+        self._show_tree_inspector()
+        self.inspector_tree.delete(*self.inspector_tree.get_children())
+        self._inspector_tree_item_to_object.clear()
+
+        root_id = self.inspector_tree.insert(
+            "",
+            "end",
+            text="Consist",
+            values=(f"{len(target_obj.ordered_equipment())} cars",),
+            open=True,
+        )
+
+        for index, car in enumerate(target_obj.ordered_equipment(), start=1):
+            car_id = self.inspector_tree.insert(
+                root_id,
+                "end",
+                text=f"Car {index}",
+                values=(car.equipment_id,),
+                open=True,
+            )
+            self._inspector_tree_item_to_object[car_id] = car
+
+            self.inspector_tree.insert(
+                car_id,
+                "end",
+                text="Class",
+                values=(car.equipment_class,),
+            )
+            self.inspector_tree.insert(
+                car_id,
+                "end",
+                text="Length",
+                values=(f"{car.operational_length_ft:.1f} ft",),
+            )
+            self.inspector_tree.insert(
+                car_id,
+                "end",
+                text="Weight",
+                values=(f"{car.gross_weight_lb:.0f} lbs",),
+            )
+            self.inspector_tree.insert(
+                car_id,
+                "end",
+                text="Damage",
+                values=(str(car.damage_rating),),
+            )
+
+    def _on_inspector_tree_select(self, event) -> None:
+        if self.inspector_tree is None:
+            return
+
+        selection = self.inspector_tree.selection()
+        if not selection:
+            return
+
+        selected_tree_item_id = selection[0]
+        selected_obj = self._inspector_tree_item_to_object.get(selected_tree_item_id)
+        if (selected_obj) is None:
+            return
+
+        primary_item_id = self._object_to_primary_canvas_item.get(id(selected_obj))
+        if primary_item_id is None:
+            return
+
+        self._clear_all_selection_highlights()
+        self._selected_item_ids.clear()
+        self._apply_highlight_to_item(primary_item_id)
+        self._selected_item_ids.add(primary_item_id)
 
     def _update_hover_status(self, obj: object | None) -> None:
         if isinstance(obj, Consist):
@@ -916,6 +1191,15 @@ class WorkbenchApp:
             tags=("car",),
         )
 
+        car1_label_item = self.canvas.create_text(
+            330,
+            180,
+            text="0001",
+            fill="white",
+            font=("Arial", 8, "bold"),
+            tags=("car_label",),
+        )
+
         car2_item = self.canvas.create_rectangle(
             364,
             160,
@@ -927,7 +1211,17 @@ class WorkbenchApp:
             tags=("car",),
         )
 
+        car2_label_item = self.canvas.create_text(
+            394,
+            180,
+            text="0002",
+            fill="white",
+            font=("Arial", 8, "bold"),
+            tags=("car_label",),
+        )
+
         self._car_item_ids = [car1_item, car2_item]
+        self._car_label_item_ids = [car1_label_item, car2_label_item]
 
         coupler_item = self.canvas.create_line(
             360,
@@ -981,7 +1275,7 @@ class WorkbenchApp:
 
 def main() -> None:
     root = tk.Tk()
-    WorkbenchApp(root)
+    OpsWorkbenchApp(root)
     root.mainloop()
 
 
