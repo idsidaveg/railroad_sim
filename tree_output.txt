@@ -1,5 +1,4 @@
 .
-├── classes.png
 ├── devtools
 │   ├── debug_consist.py
 │   ├── debug_contact_scenario.py
@@ -11,7 +10,6 @@
 │   ├── debug_network_scenario1.py
 │   ├── debug_train.py
 │   └── _impact_debug_view.py
-├── dir_struct.txt
 ├── docs
 │   ├── architecture
 │   │   └── railroad_terminology.md
@@ -40,9 +38,6 @@
 │   ├── z_f25e9d85ee9a26c1_rolling_stock_py.html
 │   ├── z_f25e9d85ee9a26c1_testable_py.html
 │   └── z_f25e9d85ee9a26c1_train_py.html
-├── packages.png
-├── pytest.ini
-├── README.md
 ├── src
 │   └── railroad_sim
 │       ├── application
@@ -50,12 +45,8 @@
 │       │   ├── movement_orchestration_service.py
 │       │   └── post_contact_context.py
 │       ├── domain
-│       │   ├── consist.py
-│       │   ├── couplers.py
-│       │   ├── defects.py
 │       │   ├── dispatch
 │       │   │   └── __init__.py
-│       │   ├── enums.py
 │       │   ├── equipment
 │       │   │   ├── boxcar.py
 │       │   │   ├── caboose.py
@@ -64,11 +55,6 @@
 │       │   │   ├── intermodalcar.py
 │       │   │   ├── locomotive.py
 │       │   │   └── tankcar.py
-│       │   ├── events.py
-│       │   ├── exceptions.py
-│       │   ├── incident_service.py
-│       │   ├── __init__.py
-│       │   ├── junction.py
 │       │   ├── network
 │       │   │   ├── boundary_connection.py
 │       │   │   ├── consist_movement_service.py
@@ -97,30 +83,40 @@
 │       │   │   ├── turnout_types.py
 │       │   │   ├── yard_throat_builder.py
 │       │   │   └── yard_throat_topology.py
+│       │   ├── yard
+│       │   │   ├── facility.py
+│       │   │   ├── facility_types.py
+│       │   │   ├── __init__.py
+│       │   │   ├── roundhouse.py
+│       │   │   ├── roundhouse_validator.py
+│       │   │   ├── turntable_connection.py
+│       │   │   └── turntable.py
+│       │   ├── consist.py
+│       │   ├── couplers.py
+│       │   ├── defects.py
+│       │   ├── enums.py
+│       │   ├── events.py
+│       │   ├── exceptions.py
+│       │   ├── incident_service.py
+│       │   ├── __init__.py
+│       │   ├── junction.py
 │       │   ├── rolling_stock.py
 │       │   ├── switching_service.py
 │       │   ├── track.py
-│       │   ├── train.py
-│       │   └── yard
-│       │       ├── facility.py
-│       │       ├── facility_types.py
-│       │       ├── __init__.py
-│       │       ├── roundhouse.py
-│       │       ├── roundhouse_validator.py
-│       │       ├── turntable_connection.py
-│       │       └── turntable.py
-│       ├── __init__.py
-│       └── presentation
-│           ├── ascii
-│           │   ├── consist_renderer.py
-│           │   └── __init__.py
-│           ├── gui
-│           │   └── tkinter
-│           └── __init__.py
+│       │   └── train.py
+│       ├── presentation
+│       │   ├── ascii
+│       │   │   ├── consist_renderer.py
+│       │   │   └── __init__.py
+│       │   ├── gui
+│       │   │   └── tkinter
+│       │   │       ├── layout_designer_app.py
+│       │   │       └── ops_workbench_app.py
+│       │   └── __init__.py
+│       └── __init__.py
 ├── tests
 │   ├── application
 │   │   └── test_movement_orchestration_service.py
-│   ├── conftest.py
 │   ├── domain
 │   │   ├── dispatch
 │   │   ├── equipment
@@ -148,6 +144,13 @@
 │   │   │   ├── test_turnout_occupancy.py
 │   │   │   ├── test_yard_throat_builder.py
 │   │   │   └── test_yard_throat_topology.py
+│   │   ├── yard
+│   │   │   ├── test_facility.py
+│   │   │   ├── test_facility_types.py
+│   │   │   ├── test_roundhouse.py
+│   │   │   ├── test_roundhouse_validator.py
+│   │   │   ├── test_turntable_connection.py
+│   │   │   └── test_turntable.py
 │   │   ├── test_consist.py
 │   │   ├── test_couplers.py
 │   │   ├── test_defects.py
@@ -156,15 +159,7 @@
 │   │   ├── test_rolling_stock.py
 │   │   ├── test_switching_service.py
 │   │   ├── test_track.py
-│   │   ├── test_train.py
-│   │   └── yard
-│   │       ├── test_facility.py
-│   │       ├── test_facility_types.py
-│   │       ├── test_roundhouse.py
-│   │       ├── test_roundhouse_validator.py
-│   │       ├── test_turntable_connection.py
-│   │       └── test_turntable.py
-│   ├── __init__.py
+│   │   └── test_train.py
 │   ├── scenarios
 │   │   ├── __init__.py
 │   │   └── test_multi_step_movement_scenarios.py
@@ -176,7 +171,14 @@
 │   │   ├── rolling_stock_builders.py
 │   │   ├── track_builders.py
 │   │   └── train_builders.py
+│   ├── conftest.py
+│   ├── __init__.py
 │   └── test_env.py
+├── classes.png
+├── dir_struct.txt
+├── packages.png
+├── pytest.ini
+├── README.md
 └── tree_output.txt
 
-28 directories, 152 files
+28 directories, 154 files
