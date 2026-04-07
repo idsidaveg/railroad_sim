@@ -144,12 +144,18 @@ class TurnoutTrackElement:
     hand: str  # "left" | "right"
     clearance_length_ft: float
 
-    # Anchor position (like x1/y1 for straight track)
+    # Anchor position
     x: float
     y: float
 
-    # Orientation (degrees, same convention as straight track)
+    # Base direction of the turnout
     angle_deg: float
+
+    # Geometry parameters
+    common_len: float = 28.0
+    straight_len: float = 100.0
+    diverge_len: float = 84.0
+    diverge_angle_deg: float = 12.0
 
     track_id: str = field(default_factory=lambda: str(uuid4()))
 
@@ -157,72 +163,59 @@ class TurnoutTrackElement:
     straight: TurnoutEndpoint = field(init=False)
     diverging: TurnoutEndpoint = field(init=False)
 
+    split_x: float = field(init=False)
+    split_y: float = field(init=False)
+
     def __post_init__(self) -> None:
-        """
-        Initialize endpoints in a simple default geometry
-
-        This is TEMPORARY geometry just to get the element working.
-        we will refine it later
-        """
-        straight_len = 100.0
-        diverge_len = 80.0
-        diverge_angle = 30.0 if self.hand == "right" else -30.0
-
-        import math
-
-        # trunk at anchor
         self.trunk = TurnoutEndpoint(
             role="trunk",
             x=self.x,
             y=self.y,
         )
-
-        # straight continuation
-        sx = self.x + straight_len * math.cos(math.radians(self.angle_deg))
-        sy = self.y + straight_len * math.sin(math.radians(self.angle_deg))
         self.straight = TurnoutEndpoint(
             role="straight",
-            x=sx,
-            y=sy,
+            x=self.x,
+            y=self.y,
         )
-
-        # diverging leg
-        diverge_heading = self.angle_deg + diverge_angle
-        dx = self.x + diverge_len * math.cos(math.radians(diverge_heading))
-        dy = self.y + diverge_len * math.sin(math.radians(diverge_heading))
-
         self.diverging = TurnoutEndpoint(
             role="diverging",
-            x=dx,
-            y=dy,
+            x=self.x,
+            y=self.y,
+        )
+        self.recalculate_geometry_from_parameters()
+
+    def recalculate_geometry_from_parameters(self) -> None:
+        signed_diverge_angle = (
+            abs(self.diverge_angle_deg)
+            if self.hand == "right"
+            else -abs(self.diverge_angle_deg)
         )
 
-    # return the endpoints from the turnout
+        self.trunk.x = self.x
+        self.trunk.y = self.y
+
+        heading_rad = math.radians(self.angle_deg)
+
+        self.split_x = self.x + self.common_len * math.cos(heading_rad)
+        self.split_y = self.y + self.common_len * math.sin(heading_rad)
+
+        self.straight.x = self.x + self.straight_len * math.cos(heading_rad)
+        self.straight.y = self.y + self.straight_len * math.sin(heading_rad)
+
+        diverge_heading_rad = math.radians(self.angle_deg + signed_diverge_angle)
+        self.diverging.x = self.split_x + self.diverge_len * math.cos(
+            diverge_heading_rad
+        )
+        self.diverging.y = self.split_y + self.diverge_len * math.sin(
+            diverge_heading_rad
+        )
+
     def endpoints(self) -> dict[str, TurnoutEndpoint]:
         return {
             "trunk": self.trunk,
             "straight": self.straight,
             "diverging": self.diverging,
         }
-
-    def recalculate_geometry_from_anchor(self) -> None:
-        straight_len = 100.0
-        diverge_len = 80.0
-        diverge_angle = 30.0 if self.hand == "right" else -30.0
-
-        self.trunk.x = self.x
-        self.trunk.y = self.y
-
-        sx = self.x + straight_len * math.cos(math.radians(self.angle_deg))
-        sy = self.y + straight_len * math.sin(math.radians(self.angle_deg))
-        self.straight.x = sx
-        self.straight.y = sy
-
-        diverge_heading = self.angle_deg + diverge_angle
-        dx = self.x + diverge_len * math.cos(math.radians(diverge_heading))
-        dy = self.y + diverge_len * math.sin(math.radians(diverge_heading))
-        self.diverging.x = dx
-        self.diverging.y = dy
 
 
 # -----------------------------------------------------------------------------
@@ -276,13 +269,15 @@ class LayoutDesignerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Layout Designer")
-        self.root.geometry("1500x900")
+        self.root.geometry("1500x960")
         self.root.minsize(1180, 760)
         self.name_entry_var = tk.StringVar(value="")
         self.track_type_var = tk.StringVar(value=TrackType.MAINLINE.value)
         self.traffic_rule_var = tk.StringVar(value=TrackTrafficRule.BIDIRECTIONAL.value)
         self._turnout_hand_var = tk.StringVar(value="right")
         self._turnout_clearance_var = tk.StringVar(value="150.0")
+        self._turnout_diverge_angle_var = tk.StringVar(value="12.0")
+        self._turnout_straight_len_var = tk.StringVar(value="100.0")
 
         self.selected_tool = tk.StringVar(value="select")
         self.selected_tool.trace_add("write", self._on_tool_changed)
@@ -597,6 +592,10 @@ class LayoutDesignerApp:
             command=self._apply_turnout_hand,
         ).pack(side="left")
 
+        ###############################################################
+        # TURNOUT MANIPULATION
+        ###############################################################
+
         # Turnout Clearance
         turnout_clearance_row = ttk.Frame(self.turnout_field_frame)
         turnout_clearance_row.pack(fill="x", expand=False, pady=(0, 10))
@@ -613,6 +612,46 @@ class LayoutDesignerApp:
             turnout_clearance_row,
             text="Apply",
             command=self._apply_turnout_clearance,
+        ).pack(side="left")
+
+        # Turnout Diverge Angle
+        turnout_diverge_angle_row = ttk.Frame(self.turnout_field_frame)
+        turnout_diverge_angle_row.pack(fill="x", expand=False, pady=(0, 10))
+        ttk.Label(turnout_diverge_angle_row, text="Diverge Angle (deg):").pack(
+            side="left"
+        )
+        self.turnout_diverge_angle_entry = ttk.Entry(
+            turnout_diverge_angle_row,
+            textvariable=self._turnout_diverge_angle_var,
+            width=18,
+        )
+        self.turnout_diverge_angle_entry.pack(
+            side="left", fill="x", expand=True, padx=(6, 6)
+        )
+        ttk.Button(
+            turnout_diverge_angle_row,
+            text="Apply",
+            command=self._apply_turnout_diverge_angle,
+        ).pack(side="left")
+
+        # Turnout Straight Length
+        turnout_straight_len_row = ttk.Frame(self.turnout_field_frame)
+        turnout_straight_len_row.pack(fill="x", expand=False, pady=(0, 10))
+        ttk.Label(turnout_straight_len_row, text="Straight Length (ft):").pack(
+            side="left"
+        )
+        self.turnout_straight_len_entry = ttk.Entry(
+            turnout_straight_len_row,
+            textvariable=self._turnout_straight_len_var,
+            width=18,
+        )
+        self.turnout_straight_len_entry.pack(
+            side="left", fill="x", expand=True, padx=(6, 6)
+        )
+        ttk.Button(
+            turnout_straight_len_row,
+            text="Apply",
+            command=self._apply_turnout_straight_len,
         ).pack(side="left")
 
         self.inspector_body = tk.Text(
@@ -695,6 +734,50 @@ class LayoutDesignerApp:
 
     def _apply_turnout_clearance(self) -> None:
         self._set_status("Turnout clearance editing is not implemented yet.")
+
+    def _apply_turnout_diverge_angle(self) -> None:
+        if self.selected_turnout_id is None:
+            return
+
+        turnout = self.turnouts[self.selected_turnout_id]
+
+        try:
+            new_angle = float(self._turnout_diverge_angle_var.get().strip())
+        except ValueError:
+            self._set_status("Diverge angle must be a number.")
+            return
+
+        if new_angle < 2.0:
+            self._set_status("Diverge angle must be at least 2.0 degrees.")
+            return
+
+        turnout.diverge_angle_deg = new_angle
+        turnout.recalculate_geometry_from_parameters()
+        self._update_turnout_inspector(turnout)
+        self._refresh_canvas()
+        self._set_status(f"Updated diverge angle to {turnout.diverge_angle_deg:.1f}°.")
+
+    def _apply_turnout_straight_len(self) -> None:
+        if self.selected_turnout_id is None:
+            return
+
+        turnout = self.turnouts[self.selected_turnout_id]
+
+        try:
+            new_length = float(self._turnout_straight_len_var.get().strip())
+        except ValueError:
+            self._set_status("Straight length must be a number.")
+            return
+
+        if new_length < 20.0:
+            self._set_status("Straight length must be at least 20.0 ft.")
+            return
+
+        turnout.straight_len = new_length
+        turnout.recalculate_geometry_from_parameters()
+        self._update_turnout_inspector(turnout)
+        self._refresh_canvas()
+        self._set_status(f"Updated straight length to {turnout.straight_len:.1f} ft.")
 
     def _on_name_entry_return(self, event: tk.Event) -> None:
         self._apply_track_name()
@@ -1008,15 +1091,27 @@ class LayoutDesignerApp:
                 )
 
     def _draw_turnout(self, turnout: TurnoutTrackElement) -> None:
+        split_point = TurnoutEndpoint(
+            role="split",
+            x=turnout.split_x,
+            y=turnout.split_y,
+        )
+
         self._draw_turnout_leg(
             turnout=turnout,
             start=turnout.trunk,
+            end=split_point,
+            is_diverging=False,
+        )
+        self._draw_turnout_leg(
+            turnout=turnout,
+            start=split_point,
             end=turnout.straight,
             is_diverging=False,
         )
         self._draw_turnout_leg(
             turnout=turnout,
-            start=turnout.trunk,
+            start=split_point,
             end=turnout.diverging,
             is_diverging=True,
         )
@@ -1219,6 +1314,7 @@ class LayoutDesignerApp:
     ) -> tuple[float, float, float, float]:
         points = [
             self._world_to_screen(turnout.trunk.x, turnout.trunk.y),
+            self._world_to_screen(turnout.split_x, turnout.split_y),
             self._world_to_screen(turnout.straight.x, turnout.straight.y),
             self._world_to_screen(turnout.diverging.x, turnout.diverging.y),
         ]
@@ -1498,6 +1594,9 @@ class LayoutDesignerApp:
                 turnout.diverging.x += dx
                 turnout.diverging.y += dy
 
+                turnout.split_x += dx
+                turnout.split_y += dy
+
                 self._drag_last_world = (world_x, world_y)
 
                 self._update_turnout_inspector(turnout)
@@ -1513,23 +1612,29 @@ class LayoutDesignerApp:
                 if self._drag_endpoint_name == "trunk":
                     turnout.x = x
                     turnout.y = y
-                    turnout.recalculate_geometry_from_anchor()
+                    turnout.recalculate_geometry_from_parameters()
 
                 elif self._drag_endpoint_name == "straight":
-                    turnout.straight.x = x
-                    turnout.straight.y = y
-                    turnout.angle_deg = math.degrees(
-                        math.atan2(y - turnout.trunk.y, x - turnout.trunk.x)
-                    )
-                    turnout.recalculate_geometry_from_anchor()
+                    dx = x - turnout.trunk.x
+                    dy = y - turnout.trunk.y
+                    turnout.angle_deg = math.degrees(math.atan2(dy, dx))
+                    turnout.straight_len = max(20.0, math.hypot(dx, dy))
+                    turnout.recalculate_geometry_from_parameters()
 
                 elif self._drag_endpoint_name == "diverging":
-                    turnout.diverging.x = x
-                    turnout.diverging.y = y
-                    turnout.angle_deg = math.degrees(
-                        math.atan2(y - turnout.trunk.y, x - turnout.trunk.x)
-                    )
-                    turnout.recalculate_geometry_from_anchor()
+                    dx = x - turnout.split_x
+                    dy = y - turnout.split_y
+
+                    diverge_heading_deg = math.degrees(math.atan2(dy, dx))
+                    signed_angle = diverge_heading_deg - turnout.angle_deg
+
+                    if turnout.hand == "right":
+                        turnout.diverge_angle_deg = max(2.0, abs(signed_angle))
+                    else:
+                        turnout.diverge_angle_deg = max(2.0, abs(signed_angle))
+
+                    turnout.diverge_len = max(20.0, math.hypot(dx, dy))
+                    turnout.recalculate_geometry_from_parameters()
 
                 self._drag_last_world = (world_x, world_y)
                 self._update_turnout_inspector(turnout)
@@ -1645,11 +1750,15 @@ class LayoutDesignerApp:
         self._hover_endpoint_name = None
 
         if hit is not None:
-            self._hover_track_id = hit["track_id"]
-            if hit["part"] == "endpoint":
-                self._hover_endpoint_name = hit["endpoint_name"]
+            if hit["type"] == "track":
+                self._hover_track_id = hit["track_id"]
+                if hit["part"] == "endpoint":
+                    self._hover_endpoint_name = hit["endpoint_name"]
+
             self._schedule_tooltip(
-                event.x_root, event.y_root, self._tooltip_text_for_hit(hit)
+                event.x_root,
+                event.y_root,
+                self._tooltip_text_for_hit(hit),
             )
         else:
             self.tooltip.hide()
@@ -2046,9 +2155,16 @@ class LayoutDesignerApp:
         for turnout_id in reversed(self.turnout_order):
             turnout = self.turnouts[turnout_id]
 
+            split_point = TurnoutEndpoint(
+                role="split",
+                x=turnout.split_x,
+                y=turnout.split_y,
+            )
+
             legs = [
-                (turnout.trunk, turnout.straight),
-                (turnout.trunk, turnout.diverging),
+                (turnout.trunk, split_point),
+                (split_point, turnout.straight),
+                (split_point, turnout.diverging),
             ]
 
             for start, end in legs:
@@ -2245,6 +2361,8 @@ class LayoutDesignerApp:
             self.name_entry_var.set("")
             self._turnout_hand_var.set("right")
             self._turnout_clearance_var.set("150.0")
+            self._turnout_diverge_angle_var.set("12.0")
+            self._turnout_straight_len_var.set("100.0")
             text = (
                 "Select a turnout to inspect it.\n\n"
                 "Turnout focus:\n"
@@ -2259,11 +2377,16 @@ class LayoutDesignerApp:
             self.name_entry_var.set(turnout.name)
             self._turnout_hand_var.set(turnout.hand)
             self._turnout_clearance_var.set(f"{turnout.clearance_length_ft:.1f}")
+            self._turnout_diverge_angle_var.set(f"{turnout.diverge_angle_deg:.1f}")
+            self._turnout_straight_len_var.set(f"{turnout.straight_len:.1f}")
+
             text = (
                 f"Turnout ID: {turnout.track_id}\n"
                 f"Name: {turnout.name}\n"
                 f"Hand: {turnout.hand}\n"
                 f"Clearance Length (ft): {turnout.clearance_length_ft:.1f}\n"
+                f"Diverge Angle (deg): {turnout.diverge_angle_deg:.1f}\n"
+                f"Straight Length (ft): {turnout.straight_len:.1f}\n"
                 f"Angle: {turnout.angle_deg:.1f}°\n\n"
                 f"Trunk: ({turnout.trunk.x:.1f}, {turnout.trunk.y:.1f})\n"
                 f"Straight: ({turnout.straight.x:.1f}, {turnout.straight.y:.1f})\n"
@@ -2398,21 +2521,42 @@ class LayoutDesignerApp:
         return color_map.get(classification, "#6b7289")
 
     def _tooltip_text_for_hit(self, hit: dict[str, str]) -> str:
-        track = self.tracks[hit["track_id"]]
+        if hit["type"] == "track":
+            track = self.tracks[hit["track_id"]]
+
+            if hit["part"] == "endpoint":
+                endpoint_name = hit["endpoint_name"]
+                classification = self._connection_classification(track, endpoint_name)
+                return (
+                    f"{track.name} endpoint {endpoint_name}\n"
+                    f"Connected: {self._connection_summary(track, endpoint_name)}\n"
+                    f"Classification: {classification}\n"
+                    f"Ctrl+drag or drag to reshape"
+                )
+
+            return (
+                f"{track.name}\n"
+                f"Length: {track.length_ft:.1f} ft\n"
+                f"Angle: {track.angle_deg:.1f}°\n"
+                f"Drag body to move"
+            )
+
+        turnout = self.turnouts[hit["turnout_id"]]
+
         if hit["part"] == "endpoint":
             endpoint_name = hit["endpoint_name"]
-            classification = self._connection_classification(track, endpoint_name)
             return (
-                f"{track.name} endpoint {endpoint_name}\n"
-                f"Connected: {self._connection_summary(track, endpoint_name)}\n"
-                f"Classification: {classification}\n"
-                f"Ctrl+drag or drag to reshape"
+                f"{turnout.name} endpoint {endpoint_name}\n"
+                f"Hand: {turnout.hand}\n"
+                f"Diverge Angle: {turnout.diverge_angle_deg:.1f}°\n"
+                f"Drag to reshape turnout geometry"
             )
 
         return (
-            f"{track.name}\n"
-            f"Length: {track.length_ft:.1f} ft\n"
-            f"Angle: {track.angle_deg:.1f}°\n"
+            f"{turnout.name}\n"
+            f"Hand: {turnout.hand}\n"
+            f"Straight Length: {turnout.straight_len:.1f} ft\n"
+            f"Diverge Angle: {turnout.diverge_angle_deg:.1f}°\n"
             f"Drag body to move"
         )
 
