@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+import datetime
 import math
 import time
 import tkinter as tk
@@ -315,6 +316,11 @@ class LayoutDesignerApp:
         self._snap_candidate_since: float | None = None
         self._snap_locked: tuple[str, str] | None = None
         self._snap_preview_point: tuple[float, float] | None = None
+
+        debug_dir = Path(__file__).resolve().parent / "debug_output"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._debug_log_path = debug_dir / f"layout_debug_{timestamp}.txt"
 
         self._build_style()
         self._build_menu()
@@ -1122,7 +1128,7 @@ class LayoutDesignerApp:
 
         self.canvas.create_text(
             smx,
-            smy - (18 * self.zoom_scale),
+            smy - (24 * self.zoom_scale),
             text=turnout.name,
             font=("Arial", max(8, int(10 * self.zoom_scale))),
             fill="navy",
@@ -1164,8 +1170,6 @@ class LayoutDesignerApp:
 
         ux = dx / length
         uy = dy / length
-        nx = -dy / length
-        ny = dx / length
 
         render_sx1 = sx1
         render_sy1 = sy1
@@ -1288,7 +1292,23 @@ class LayoutDesignerApp:
         size = self.ENDPOINT_BOX_SIZE_PX * self.zoom_scale
         half = size / 2.0
 
+        is_hover = (
+            self._hover_track_id == turnout.track_id
+            and self._hover_endpoint_name == endpoint_name
+        )
+        is_snap_candidate = self._snap_candidate == (turnout.track_id, endpoint_name)
+        is_snap_locked = self._snap_locked == (turnout.track_id, endpoint_name)
         is_connected = endpoint.connected_to_track_id is not None
+
+        is_active_dragged_endpoint = (
+            self.selected_turnout_id == turnout.track_id
+            and self._drag_mode == "turnout_endpoint"
+            and self._drag_endpoint_name == endpoint_name
+        )
+
+        has_active_snap_preview = (
+            is_active_dragged_endpoint and self._snap_preview_point is not None
+        )
 
         outline = "#777777"
         fill = "white"
@@ -1297,6 +1317,36 @@ class LayoutDesignerApp:
         if is_connected:
             fill = "#3f78c4"
             outline = "#275388"
+
+        if is_hover:
+            outline = "#111111"
+
+        if is_snap_candidate:
+            outline = "#2f9e44"
+
+        if has_active_snap_preview:
+            fill = "#d8f5dd"
+            outline = "#2f9e44"
+
+        if is_active_dragged_endpoint and self._snap_candidate is not None:
+            fill = "#d8f5dd"
+            outline = "#2f9e44"
+
+        if is_snap_locked or (
+            is_active_dragged_endpoint and self._snap_locked is not None
+        ):
+            fill = "#2f9e44"
+            outline = "#1d6a2d"
+
+        if is_hover or is_snap_candidate or is_snap_locked or has_active_snap_preview:
+            preview_radius = self.SNAP_PREVIEW_RADIUS_PX * self.zoom_scale
+            self.canvas.create_oval(
+                sx - preview_radius,
+                sy - preview_radius,
+                sx + preview_radius,
+                sy + preview_radius,
+                outline="#b7e4c7",
+            )
 
         self.canvas.create_rectangle(
             sx - half,
@@ -1505,6 +1555,7 @@ class LayoutDesignerApp:
             self._refresh_canvas()
             return
 
+    # new code without
     def _on_canvas_drag(self, event: tk.Event) -> None:
         world_x, world_y = self._event_world(event)
 
@@ -1584,20 +1635,32 @@ class LayoutDesignerApp:
 
                 turnout.x += dx
                 turnout.y += dy
-
-                turnout.trunk.x += dx
-                turnout.trunk.y += dy
-
-                turnout.straight.x += dx
-                turnout.straight.y += dy
-
-                turnout.diverging.x += dx
-                turnout.diverging.y += dy
-
-                turnout.split_x += dx
-                turnout.split_y += dy
+                turnout.recalculate_geometry_from_parameters()
 
                 self._drag_last_world = (world_x, world_y)
+
+                best_snap = self._find_best_snap_for_moved_turnout(turnout)
+                if best_snap is None:
+                    self._snap_candidate = None
+                    self._snap_candidate_since = None
+                    self._snap_locked = None
+                    self._snap_preview_point = None
+                else:
+                    (
+                        active_endpoint_name,
+                        _candidate_track_id,
+                        _candidate_endpoint_name,
+                        _candidate_x,
+                        _candidate_y,
+                    ) = best_snap
+
+                    active_endpoint = turnout.endpoints()[active_endpoint_name]
+                    self._update_turnout_snap_state(
+                        turnout_id=turnout.track_id,
+                        endpoint_name=active_endpoint_name,
+                        active_x=active_endpoint.x,
+                        active_y=active_endpoint.y,
+                    )
 
                 self._update_turnout_inspector(turnout)
                 self._refresh_canvas()
@@ -1628,18 +1691,153 @@ class LayoutDesignerApp:
                     diverge_heading_deg = math.degrees(math.atan2(dy, dx))
                     signed_angle = diverge_heading_deg - turnout.angle_deg
 
-                    if turnout.hand == "right":
-                        turnout.diverge_angle_deg = max(2.0, abs(signed_angle))
-                    else:
-                        turnout.diverge_angle_deg = max(2.0, abs(signed_angle))
-
+                    turnout.diverge_angle_deg = max(2.0, abs(signed_angle))
                     turnout.diverge_len = max(20.0, math.hypot(dx, dy))
                     turnout.recalculate_geometry_from_parameters()
+
+                self._update_turnout_snap_state(
+                    turnout_id=turnout.track_id,
+                    endpoint_name=self._drag_endpoint_name,
+                    active_x=x,
+                    active_y=y,
+                )
 
                 self._drag_last_world = (world_x, world_y)
                 self._update_turnout_inspector(turnout)
                 self._refresh_canvas()
                 return
+
+    def _find_best_snap_for_moved_turnout(
+        self,
+        turnout: TurnoutTrackElement,
+    ) -> tuple[str, str, str, float, float] | None:
+        best: tuple[str, str, str, float, float] | None = None
+        best_distance = float("inf")
+
+        # Whole-turnout body move stays rigid-body translation only.
+        # We still allow trunk / straight / diverging to participate as
+        # snap candidates so the user gets the same cue/lock behavior.
+        for active_endpoint_name in ("trunk", "straight", "diverging"):
+            active_endpoint = turnout.endpoints()[active_endpoint_name]
+            candidate = self._find_snap_candidate_for_turnout_endpoint(
+                turnout_id=turnout.track_id,
+                endpoint_name=active_endpoint_name,
+                active_x=active_endpoint.x,
+                active_y=active_endpoint.y,
+            )
+            if candidate is None:
+                continue
+
+            (
+                candidate_track_id,
+                candidate_endpoint_name,
+                candidate_x,
+                candidate_y,
+                _candidate_kind,
+            ) = candidate
+
+            distance = math.hypot(
+                candidate_x - active_endpoint.x,
+                candidate_y - active_endpoint.y,
+            )
+
+            if distance < best_distance:
+                best_distance = distance
+                best = (
+                    active_endpoint_name,
+                    candidate_track_id,
+                    candidate_endpoint_name,
+                    candidate_x,
+                    candidate_y,
+                )
+
+        return best
+
+    def _find_snap_candidate_for_turnout_endpoint(
+        self,
+        *,
+        turnout_id: str,
+        endpoint_name: str,
+        active_x: float,
+        active_y: float,
+    ) -> tuple[str, str, float, float, str] | None:
+        turnout = self.turnouts[turnout_id]
+        active_heading = self._turnout_endpoint_heading_deg(turnout, endpoint_name)
+
+        best: tuple[str, str, float, float, str] | None = None
+        best_distance = float("inf")
+
+        preview_radius = self.SNAP_PREVIEW_RADIUS_PX / max(self.zoom_scale, 0.001)
+
+        for track in self.tracks.values():
+            for candidate_endpoint_name in ("A", "B"):
+                endpoint = track.endpoint(candidate_endpoint_name)
+                distance = math.hypot(endpoint.x - active_x, endpoint.y - active_y)
+                if distance > preview_radius:
+                    continue
+
+                candidate_heading = self._endpoint_heading_deg(
+                    track,
+                    candidate_endpoint_name,
+                )
+
+                if endpoint_name == "diverging":
+                    headings_ok = True
+                else:
+                    headings_ok = self._headings_are_compatible(
+                        active_heading,
+                        candidate_heading,
+                    )
+
+                if not headings_ok:
+                    continue
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best = (
+                        track.track_id,
+                        candidate_endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        "track",
+                    )
+
+        for other_turnout in self.turnouts.values():
+            if other_turnout.track_id == turnout_id:
+                continue
+
+            for candidate_endpoint_name, endpoint in other_turnout.endpoints().items():
+                distance = math.hypot(endpoint.x - active_x, endpoint.y - active_y)
+                if distance > preview_radius:
+                    continue
+
+                candidate_heading = self._turnout_endpoint_heading_deg(
+                    other_turnout,
+                    candidate_endpoint_name,
+                )
+
+                if endpoint_name == "diverging":
+                    headings_ok = True
+                else:
+                    headings_ok = self._headings_are_compatible(
+                        active_heading,
+                        candidate_heading,
+                    )
+
+                if not headings_ok:
+                    continue
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best = (
+                        other_turnout.track_id,
+                        candidate_endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        "turnout",
+                    )
+
+        return best
 
     def _clamp_track_to_canvas(self, track: StraightTrackElement) -> None:
         min_x = min(track.x1, track.x2)
@@ -1664,8 +1862,6 @@ class LayoutDesignerApp:
             track.move_by(dx, dy)
 
     def _on_canvas_release(self, event: tk.Event) -> None:
-        world_x, world_y = self._event_world(event)
-
         if self._drag_mode == "create" and self._create_track_id is not None:
             track = self.tracks[self._create_track_id]
             if track.pixel_length < 4.0:
@@ -1718,27 +1914,44 @@ class LayoutDesignerApp:
         elif self.selected_turnout_id is not None:
             turnout = self.turnouts[self.selected_turnout_id]
 
-            if self.snap_to_grid.get():
-                snapped_x, snapped_y = self._apply_grid_snap(turnout.x, turnout.y)
-                dx = snapped_x - turnout.x
-                dy = snapped_y - turnout.y
+            if (
+                self._drag_mode == "turnout_endpoint"
+                and self._drag_endpoint_name is not None
+            ):
+                self._commit_turnout_snap_if_locked(
+                    self.selected_turnout_id,
+                    self._drag_endpoint_name,
+                )
+                self._update_turnout_inspector(turnout)
+                self._set_status(f"Updated geometry for {turnout.name}.")
 
-                turnout.x += dx
-                turnout.y += dy
+            elif self._drag_mode == "move":
+                best_snap = self._find_best_snap_for_moved_turnout(turnout)
 
-                turnout.trunk.x += dx
-                turnout.trunk.y += dy
+                if best_snap is not None:
+                    active_endpoint_name = best_snap[0]
+                    active_endpoint = turnout.endpoints()[active_endpoint_name]
 
-                turnout.straight.x += dx
-                turnout.straight.y += dy
+                    self._update_turnout_snap_state(
+                        turnout_id=turnout.track_id,
+                        endpoint_name=active_endpoint_name,
+                        active_x=active_endpoint.x,
+                        active_y=active_endpoint.y,
+                    )
+                    self._commit_moved_turnout_snap_if_locked(
+                        turnout.track_id,
+                        active_endpoint_name,
+                    )
 
-                turnout.diverging.x += dx
-                turnout.diverging.y += dy
+                elif self.snap_to_grid.get():
+                    snapped_x, snapped_y = self._apply_grid_snap(turnout.x, turnout.y)
+                    turnout.x = snapped_x
+                    turnout.y = snapped_y
+                    turnout.recalculate_geometry_from_parameters()
 
-            self._update_turnout_inspector(turnout)
-            self._set_status(f"Moved {turnout.name}.")
+                self._update_turnout_inspector(turnout)
+                self._set_status(f"Moved {turnout.name}.")
 
-        _ = (world_x, world_y)
         self._end_drag()
         self._refresh_canvas()
 
@@ -1752,6 +1965,11 @@ class LayoutDesignerApp:
         if hit is not None:
             if hit["type"] == "track":
                 self._hover_track_id = hit["track_id"]
+                if hit["part"] == "endpoint":
+                    self._hover_endpoint_name = hit["endpoint_name"]
+
+            elif hit["type"] == "turnout":
+                self._hover_track_id = hit["turnout_id"]
                 if hit["part"] == "endpoint":
                     self._hover_endpoint_name = hit["endpoint_name"]
 
@@ -1904,13 +2122,19 @@ class LayoutDesignerApp:
             return
 
         other_track = self.tracks.get(other_track_id)
-        if other_track is None:
+        if other_track is not None:
+            other_endpoint = other_track.endpoint(other_endpoint_name)
+            if other_endpoint.connected_to_track_id == track.track_id:
+                other_endpoint.connected_to_track_id = None
+                other_endpoint.connected_to_endpoint_name = None
             return
 
-        other_endpoint = other_track.endpoint(other_endpoint_name)
-        if other_endpoint.connected_to_track_id == track.track_id:
-            other_endpoint.connected_to_track_id = None
-            other_endpoint.connected_to_endpoint_name = None
+        other_turnout = self.turnouts.get(other_track_id)
+        if other_turnout is not None:
+            other_endpoint = other_turnout.endpoints()[other_endpoint_name]
+            if other_endpoint.connected_to_track_id == track.track_id:
+                other_endpoint.connected_to_track_id = None
+                other_endpoint.connected_to_endpoint_name = None
 
     def _commit_snap_if_locked(
         self, active_track_id: str, active_endpoint_name: str
@@ -1926,20 +2150,331 @@ class LayoutDesignerApp:
             return
 
         active_track = self.tracks[active_track_id]
-        target_track = self.tracks[target_track_id]
         x, y = self._snap_preview_point
         active_track.set_endpoint(active_endpoint_name, x, y)
 
         self._clear_endpoint_connection(active_track, active_endpoint_name)
-        self._clear_endpoint_connection(target_track, target_endpoint_name)
+
+        target_track = self.tracks.get(target_track_id)
+        if target_track is not None:
+            target_endpoint = target_track.endpoint(target_endpoint_name)
+            self._clear_endpoint_connection(target_track, target_endpoint_name)
+
+        else:
+            target_turnout = self.turnouts.get(target_track_id)
+            if target_turnout is None:
+                return
+            target_endpoint = target_turnout.endpoints()[target_endpoint_name]
+            target_endpoint.connected_to_track_id = None
+            target_endpoint.connected_to_endpoint_name = None
 
         active_endpoint = active_track.endpoint(active_endpoint_name)
-        target_endpoint = target_track.endpoint(target_endpoint_name)
 
         active_endpoint.connected_to_track_id = target_track_id
         active_endpoint.connected_to_endpoint_name = target_endpoint_name
         target_endpoint.connected_to_track_id = active_track_id
         target_endpoint.connected_to_endpoint_name = active_endpoint_name
+
+    # new debug code start
+    def _commit_turnout_snap_if_locked(
+        self,
+        turnout_id: str,
+        turnout_endpoint_name: str,
+    ) -> None:
+        self._debug(
+            "TURNOUT COMMIT START "
+            f"id={turnout_id} endpoint={turnout_endpoint_name} "
+            f"snap_locked={self._snap_locked} "
+            f"snap_preview={self._snap_preview_point}"
+        )
+
+        if self._snap_locked is None or self._snap_preview_point is None:
+            self._debug("TURNOUT COMMIT ABORT no locked snap or preview point")
+            return
+
+        turnout = self.turnouts[turnout_id]
+        turnout_endpoint = turnout.endpoints()[turnout_endpoint_name]
+
+        target_id, target_endpoint_name = self._snap_locked
+
+        if target_id == turnout_id and target_endpoint_name == turnout_endpoint_name:
+            self._debug("TURNOUT COMMIT ABORT target is same endpoint")
+            return
+
+        target_track = self.tracks.get(target_id)
+        target_turnout = self.turnouts.get(target_id)
+
+        if turnout_endpoint.connected_to_track_id is not None:
+            old_other_id = turnout_endpoint.connected_to_track_id
+            old_other_endpoint_name = turnout_endpoint.connected_to_endpoint_name
+
+            turnout_endpoint.connected_to_track_id = None
+            turnout_endpoint.connected_to_endpoint_name = None
+
+            if old_other_id is not None and old_other_endpoint_name is not None:
+                old_track = self.tracks.get(old_other_id)
+                if old_track is not None:
+                    other_endpoint = old_track.endpoint(old_other_endpoint_name)
+                    if other_endpoint.connected_to_track_id == turnout_id:
+                        other_endpoint.connected_to_track_id = None
+                        other_endpoint.connected_to_endpoint_name = None
+
+                old_turnout = self.turnouts.get(old_other_id)
+                if old_turnout is not None:
+                    other_endpoint = old_turnout.endpoints()[old_other_endpoint_name]
+                    if other_endpoint.connected_to_track_id == turnout_id:
+                        other_endpoint.connected_to_track_id = None
+                        other_endpoint.connected_to_endpoint_name = None
+
+        snap_x, snap_y = self._snap_preview_point
+
+        self._debug(
+            "TURNOUT COMMIT APPLY GEOMETRY "
+            f"id={turnout_id} endpoint={turnout_endpoint_name} "
+            f"snap_point=({snap_x:.2f}, {snap_y:.2f}) "
+            f"anchor_before=({turnout.x:.2f}, {turnout.y:.2f}) "
+            f"trunk_before=({turnout.trunk.x:.2f}, {turnout.trunk.y:.2f}) "
+            f"straight_before=({turnout.straight.x:.2f}, {turnout.straight.y:.2f}) "
+            f"diverging_before=({turnout.diverging.x:.2f}, {turnout.diverging.y:.2f})"
+        )
+
+        if turnout_endpoint_name == "trunk":
+            turnout.x = snap_x
+            turnout.y = snap_y
+            turnout.recalculate_geometry_from_parameters()
+
+        elif turnout_endpoint_name == "straight":
+            dx = snap_x - turnout.trunk.x
+            dy = snap_y - turnout.trunk.y
+            turnout.angle_deg = math.degrees(math.atan2(dy, dx))
+            turnout.straight_len = max(20.0, math.hypot(dx, dy))
+            turnout.recalculate_geometry_from_parameters()
+
+        elif turnout_endpoint_name == "diverging":
+            dx = snap_x - turnout.split_x
+            dy = snap_y - turnout.split_y
+            diverge_heading_deg = math.degrees(math.atan2(dy, dx))
+            signed_angle = diverge_heading_deg - turnout.angle_deg
+
+            turnout.diverge_angle_deg = max(2.0, abs(signed_angle))
+            turnout.diverge_len = max(20.0, math.hypot(dx, dy))
+            turnout.recalculate_geometry_from_parameters()
+
+            turnout.diverging.x = snap_x
+            turnout.diverging.y = snap_y
+
+        turnout_endpoint = turnout.endpoints()[turnout_endpoint_name]
+
+        self._debug(
+            "TURNOUT COMMIT AFTER GEOMETRY "
+            f"id={turnout_id} endpoint={turnout_endpoint_name} "
+            f"anchor_after=({turnout.x:.2f}, {turnout.y:.2f}) "
+            f"trunk_after=({turnout.trunk.x:.2f}, {turnout.trunk.y:.2f}) "
+            f"straight_after=({turnout.straight.x:.2f}, {turnout.straight.y:.2f}) "
+            f"diverging_after=({turnout.diverging.x:.2f}, {turnout.diverging.y:.2f})"
+        )
+
+        if target_track is not None:
+            target_endpoint = target_track.endpoint(target_endpoint_name)
+            self._clear_endpoint_connection(target_track, target_endpoint_name)
+
+            turnout_endpoint.connected_to_track_id = target_track.track_id
+            turnout_endpoint.connected_to_endpoint_name = target_endpoint_name
+            target_endpoint.connected_to_track_id = turnout.track_id
+            target_endpoint.connected_to_endpoint_name = turnout_endpoint_name
+
+            self._debug(
+                "TURNOUT COMMIT COMPLETE target_kind=track "
+                f"turnout={turnout_id}:{turnout_endpoint_name} "
+                f"target={target_track.track_id}:{target_endpoint_name}"
+            )
+            return
+
+        if target_turnout is not None:
+            target_endpoint = target_turnout.endpoints()[target_endpoint_name]
+
+            if target_endpoint.connected_to_track_id is not None:
+                old_other_id = target_endpoint.connected_to_track_id
+                old_other_endpoint_name = target_endpoint.connected_to_endpoint_name
+                target_endpoint.connected_to_track_id = None
+                target_endpoint.connected_to_endpoint_name = None
+
+                if old_other_id is not None and old_other_endpoint_name is not None:
+                    old_track = self.tracks.get(old_other_id)
+                    if old_track is not None:
+                        other_endpoint = old_track.endpoint(old_other_endpoint_name)
+                        if (
+                            other_endpoint.connected_to_track_id
+                            == target_turnout.track_id
+                        ):
+                            other_endpoint.connected_to_track_id = None
+                            other_endpoint.connected_to_endpoint_name = None
+
+                    old_turnout = self.turnouts.get(old_other_id)
+                    if old_turnout is not None:
+                        other_endpoint = old_turnout.endpoints()[
+                            old_other_endpoint_name
+                        ]
+                        if (
+                            other_endpoint.connected_to_track_id
+                            == target_turnout.track_id
+                        ):
+                            other_endpoint.connected_to_track_id = None
+                            other_endpoint.connected_to_endpoint_name = None
+
+            turnout_endpoint.connected_to_track_id = target_turnout.track_id
+            turnout_endpoint.connected_to_endpoint_name = target_endpoint_name
+            target_endpoint.connected_to_track_id = turnout.track_id
+            target_endpoint.connected_to_endpoint_name = turnout_endpoint_name
+
+            self._debug(
+                "TURNOUT COMMIT COMPLETE target_kind=turnout "
+                f"turnout={turnout_id}:{turnout_endpoint_name} "
+                f"target={target_turnout.track_id}:{target_endpoint_name}"
+            )
+
+    def _commit_moved_turnout_snap_if_locked(
+        self,
+        turnout_id: str,
+        turnout_endpoint_name: str,
+    ) -> None:
+        self._debug(
+            "TURNOUT BODY COMMIT START "
+            f"id={turnout_id} endpoint={turnout_endpoint_name} "
+            f"snap_locked={self._snap_locked} "
+            f"snap_preview={self._snap_preview_point}"
+        )
+
+        if self._snap_locked is None or self._snap_preview_point is None:
+            self._debug("TURNOUT BODY COMMIT ABORT no locked snap or preview point")
+            return
+
+        turnout = self.turnouts[turnout_id]
+        turnout_endpoint = turnout.endpoints()[turnout_endpoint_name]
+
+        target_id, target_endpoint_name = self._snap_locked
+
+        if target_id == turnout_id and target_endpoint_name == turnout_endpoint_name:
+            self._debug("TURNOUT BODY COMMIT ABORT target is same endpoint")
+            return
+
+        target_track = self.tracks.get(target_id)
+        target_turnout = self.turnouts.get(target_id)
+
+        # Clear existing connection on the moving turnout endpoint first.
+        if turnout_endpoint.connected_to_track_id is not None:
+            old_other_id = turnout_endpoint.connected_to_track_id
+            old_other_endpoint_name = turnout_endpoint.connected_to_endpoint_name
+
+            turnout_endpoint.connected_to_track_id = None
+            turnout_endpoint.connected_to_endpoint_name = None
+
+            if old_other_id is not None and old_other_endpoint_name is not None:
+                old_track = self.tracks.get(old_other_id)
+                if old_track is not None:
+                    other_endpoint = old_track.endpoint(old_other_endpoint_name)
+                    if other_endpoint.connected_to_track_id == turnout_id:
+                        other_endpoint.connected_to_track_id = None
+                        other_endpoint.connected_to_endpoint_name = None
+
+                old_turnout = self.turnouts.get(old_other_id)
+                if old_turnout is not None:
+                    other_endpoint = old_turnout.endpoints()[old_other_endpoint_name]
+                    if other_endpoint.connected_to_track_id == turnout_id:
+                        other_endpoint.connected_to_track_id = None
+                        other_endpoint.connected_to_endpoint_name = None
+
+        snap_x, snap_y = self._snap_preview_point
+
+        dx = snap_x - turnout_endpoint.x
+        dy = snap_y - turnout_endpoint.y
+
+        self._debug(
+            "TURNOUT BODY COMMIT TRANSLATE "
+            f"id={turnout_id} endpoint={turnout_endpoint_name} "
+            f"endpoint_before=({turnout_endpoint.x:.2f}, {turnout_endpoint.y:.2f}) "
+            f"snap_point=({snap_x:.2f}, {snap_y:.2f}) "
+            f"delta=({dx:.2f}, {dy:.2f}) "
+            f"anchor_before=({turnout.x:.2f}, {turnout.y:.2f}) "
+            f"trunk_before=({turnout.trunk.x:.2f}, {turnout.trunk.y:.2f}) "
+            f"straight_before=({turnout.straight.x:.2f}, {turnout.straight.y:.2f}) "
+            f"diverging_before=({turnout.diverging.x:.2f}, {turnout.diverging.y:.2f})"
+        )
+
+        # Rigid-body move only. No rotation here.
+        turnout.x += dx
+        turnout.y += dy
+        turnout.recalculate_geometry_from_parameters()
+
+        turnout_endpoint = turnout.endpoints()[turnout_endpoint_name]
+
+        self._debug(
+            "TURNOUT BODY COMMIT AFTER TRANSLATE "
+            f"id={turnout_id} endpoint={turnout_endpoint_name} "
+            f"anchor_after=({turnout.x:.2f}, {turnout.y:.2f}) "
+            f"trunk_after=({turnout.trunk.x:.2f}, {turnout.trunk.y:.2f}) "
+            f"straight_after=({turnout.straight.x:.2f}, {turnout.straight.y:.2f}) "
+            f"diverging_after=({turnout.diverging.x:.2f}, {turnout.diverging.y:.2f})"
+        )
+
+        if target_track is not None:
+            target_endpoint = target_track.endpoint(target_endpoint_name)
+            self._clear_endpoint_connection(target_track, target_endpoint_name)
+
+            turnout_endpoint.connected_to_track_id = target_track.track_id
+            turnout_endpoint.connected_to_endpoint_name = target_endpoint_name
+            target_endpoint.connected_to_track_id = turnout.track_id
+            target_endpoint.connected_to_endpoint_name = turnout_endpoint_name
+
+            self._debug(
+                "TURNOUT BODY COMMIT COMPLETE target_kind=track "
+                f"turnout={turnout_id}:{turnout_endpoint_name} "
+                f"target={target_track.track_id}:{target_endpoint_name}"
+            )
+            return
+
+        if target_turnout is not None:
+            target_endpoint = target_turnout.endpoints()[target_endpoint_name]
+
+            if target_endpoint.connected_to_track_id is not None:
+                old_other_id = target_endpoint.connected_to_track_id
+                old_other_endpoint_name = target_endpoint.connected_to_endpoint_name
+                target_endpoint.connected_to_track_id = None
+                target_endpoint.connected_to_endpoint_name = None
+
+                if old_other_id is not None and old_other_endpoint_name is not None:
+                    old_track = self.tracks.get(old_other_id)
+                    if old_track is not None:
+                        other_endpoint = old_track.endpoint(old_other_endpoint_name)
+                        if (
+                            other_endpoint.connected_to_track_id
+                            == target_turnout.track_id
+                        ):
+                            other_endpoint.connected_to_track_id = None
+                            other_endpoint.connected_to_endpoint_name = None
+
+                    old_turnout = self.turnouts.get(old_other_id)
+                    if old_turnout is not None:
+                        other_endpoint = old_turnout.endpoints()[
+                            old_other_endpoint_name
+                        ]
+                        if (
+                            other_endpoint.connected_to_track_id
+                            == target_turnout.track_id
+                        ):
+                            other_endpoint.connected_to_track_id = None
+                            other_endpoint.connected_to_endpoint_name = None
+
+            turnout_endpoint.connected_to_track_id = target_turnout.track_id
+            turnout_endpoint.connected_to_endpoint_name = target_endpoint_name
+            target_endpoint.connected_to_track_id = turnout.track_id
+            target_endpoint.connected_to_endpoint_name = turnout_endpoint_name
+
+            self._debug(
+                "TURNOUT BODY COMMIT COMPLETE target_kind=turnout "
+                f"turnout={turnout_id}:{turnout_endpoint_name} "
+                f"target={target_turnout.track_id}:{target_endpoint_name}"
+            )
 
     def _end_drag(self) -> None:
         self._drag_mode = None
@@ -1979,9 +2514,13 @@ class LayoutDesignerApp:
             self._snap_preview_point = None
             return
 
-        candidate_track_id, candidate_endpoint_name, candidate_x, candidate_y = (
-            candidate
-        )
+        (
+            candidate_track_id,
+            candidate_endpoint_name,
+            candidate_x,
+            candidate_y,
+            _candidate_kind,
+        ) = candidate
 
         candidate_key = (
             candidate_track_id,
@@ -2019,14 +2558,17 @@ class LayoutDesignerApp:
         active_endpoint_name: str,
         active_x: float,
         active_y: float,
-    ) -> tuple[str, str, float, float] | None:
+    ) -> tuple[str, str, float, float, str] | None:
 
-        best: tuple[str, str, float, float] | None = None
+        best: tuple[str, str, float, float, str] | None = None
         best_distance = float("inf")
 
         active_track = self.tracks[active_track_id]
         active_heading = self._endpoint_heading_deg(active_track, active_endpoint_name)
 
+        # ----------------------------------------------------------
+        # Track endpoints as snap targets
+        # ----------------------------------------------------------
         for track in self.tracks.values():
             if track.track_id == active_track_id:
                 continue
@@ -2043,17 +2585,54 @@ class LayoutDesignerApp:
 
                 if distance < best_distance:
                     best_distance = distance
-                    best = (track.track_id, endpoint_name, endpoint.x, endpoint.y)
+                    best = (
+                        track.track_id,
+                        endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        "track",
+                    )
+
+        # ----------------------------------------------------------
+        # Turnout endpoints as snap targets
+        # ----------------------------------------------------------
+        for turnout in self.turnouts.values():
+            turnout_targets = {
+                "trunk": turnout.trunk,
+                "straight": turnout.straight,
+                "diverging": turnout.diverging,
+            }
+
+            turnout_headings = {
+                "trunk": self._turnout_endpoint_heading_deg(turnout, "trunk"),
+                "straight": self._turnout_endpoint_heading_deg(turnout, "straight"),
+                "diverging": self._turnout_endpoint_heading_deg(turnout, "diverging"),
+            }
+
+            for endpoint_name, endpoint in turnout_targets.items():
+                distance = math.hypot(endpoint.x - active_x, endpoint.y - active_y)
+                if distance > self.SNAP_PREVIEW_RADIUS_PX / max(self.zoom_scale, 0.001):
+                    continue
+
+                candidate_heading = turnout_headings[endpoint_name]
+                if not self._headings_are_compatible(active_heading, candidate_heading):
+                    continue
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best = (
+                        turnout.track_id,
+                        endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        "turnout",
+                    )
 
         if best is None:
             self._set_status(
                 f"No snap candidate for {active_track_id}:{active_endpoint_name}"
             )
             return None
-
-        if best_distance > self.SNAP_COMMIT_RADIUS_PX / max(self.zoom_scale, 0.001):
-            # Preview only if in outer ring, but still return candidate so hover cue can show.
-            return best
 
         return best
 
@@ -2075,9 +2654,13 @@ class LayoutDesignerApp:
             if candidate is None:
                 continue
 
-            candidate_track_id, candidate_endpoint_name, candidate_x, candidate_y = (
-                candidate
-            )
+            (
+                candidate_track_id,
+                candidate_endpoint_name,
+                candidate_x,
+                candidate_y,
+                _candidate_kind,
+            ) = candidate
 
             distance = math.hypot(
                 candidate_x - active_endpoint.x,
@@ -2102,6 +2685,183 @@ class LayoutDesignerApp:
         if endpoint_name == "A":
             return math.degrees(math.atan2(track.y1 - track.y2, track.x1 - track.x2))
         return math.degrees(math.atan2(track.y2 - track.y1, track.x2 - track.x1))
+
+    def _turnout_endpoint_heading_deg(
+        self,
+        turnout: TurnoutTrackElement,
+        endpoint_name: str,
+    ) -> float:
+        signed_diverge_angle = (
+            turnout.diverge_angle_deg
+            if turnout.hand == "right"
+            else -turnout.diverge_angle_deg
+        )
+
+        if endpoint_name == "trunk":
+            return turnout.angle_deg + 180.0
+
+        if endpoint_name == "straight":
+            return turnout.angle_deg
+
+        if endpoint_name == "diverging":
+            return turnout.angle_deg + signed_diverge_angle
+
+        raise ValueError(f"Unknown turnout endpoint name: {endpoint_name}")
+
+    # new debug code
+    def _update_turnout_snap_state(
+        self,
+        *,
+        turnout_id: str,
+        endpoint_name: str,
+        active_x: float,
+        active_y: float,
+    ) -> None:
+        turnout = self.turnouts[turnout_id]
+        active_heading = self._turnout_endpoint_heading_deg(turnout, endpoint_name)
+
+        self._debug(
+            "TURNOUT SNAP CHECK START "
+            f"id={turnout_id} endpoint={endpoint_name} "
+            f"active=({active_x:.2f}, {active_y:.2f}) "
+            f"active_heading={active_heading:.2f}"
+        )
+
+        best: tuple[str, str, float, float, str] | None = None
+        best_distance = float("inf")
+
+        preview_radius = self.SNAP_PREVIEW_RADIUS_PX / max(self.zoom_scale, 0.001)
+
+        for track in self.tracks.values():
+            for candidate_endpoint_name in ("A", "B"):
+                endpoint = track.endpoint(candidate_endpoint_name)
+                distance = math.hypot(endpoint.x - active_x, endpoint.y - active_y)
+                candidate_heading = self._endpoint_heading_deg(
+                    track,
+                    candidate_endpoint_name,
+                )
+
+                if endpoint_name == "diverging":
+                    headings_ok = True
+                else:
+                    headings_ok = self._headings_are_compatible(
+                        active_heading,
+                        candidate_heading,
+                    )
+
+                self._debug(
+                    "TURNOUT SNAP VS TRACK "
+                    f"turnout={turnout_id}:{endpoint_name} "
+                    f"target={track.track_id}:{candidate_endpoint_name} "
+                    f"target_point=({endpoint.x:.2f}, {endpoint.y:.2f}) "
+                    f"distance={distance:.2f} "
+                    f"preview_radius={preview_radius:.2f} "
+                    f"candidate_heading={candidate_heading:.2f} "
+                    f"headings_ok={headings_ok}"
+                )
+
+                if distance > preview_radius:
+                    continue
+
+                if not headings_ok:
+                    continue
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best = (
+                        track.track_id,
+                        candidate_endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        "track",
+                    )
+
+        for other_turnout in self.turnouts.values():
+            if other_turnout.track_id == turnout_id:
+                continue
+
+            for candidate_endpoint_name, endpoint in other_turnout.endpoints().items():
+                distance = math.hypot(endpoint.x - active_x, endpoint.y - active_y)
+                candidate_heading = self._turnout_endpoint_heading_deg(
+                    other_turnout,
+                    candidate_endpoint_name,
+                )
+
+                if endpoint_name == "diverging":
+                    headings_ok = True
+                else:
+                    headings_ok = self._headings_are_compatible(
+                        active_heading,
+                        candidate_heading,
+                    )
+
+                self._debug(
+                    "TURNOUT SNAP VS TURNOUT "
+                    f"turnout={turnout_id}:{endpoint_name} "
+                    f"target={other_turnout.track_id}:{candidate_endpoint_name} "
+                    f"target_point=({endpoint.x:.2f}, {endpoint.y:.2f}) "
+                    f"distance={distance:.2f} "
+                    f"preview_radius={preview_radius:.2f} "
+                    f"candidate_heading={candidate_heading:.2f} "
+                    f"headings_ok={headings_ok}"
+                )
+
+                if distance > preview_radius:
+                    continue
+
+                if not headings_ok:
+                    continue
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best = (
+                        other_turnout.track_id,
+                        candidate_endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        "turnout",
+                    )
+
+        if best is None:
+            self._debug(
+                "TURNOUT SNAP CHECK RESULT "
+                f"id={turnout_id} endpoint={endpoint_name} result=None"
+            )
+            self._snap_candidate = None
+            self._snap_candidate_since = None
+            self._snap_locked = None
+            self._snap_preview_point = None
+            return
+
+        (
+            candidate_track_id,
+            candidate_endpoint_name,
+            candidate_x,
+            candidate_y,
+            candidate_kind,
+        ) = best
+
+        candidate_key = (candidate_track_id, candidate_endpoint_name)
+        candidate_point = (candidate_x, candidate_y)
+
+        self._snap_candidate = candidate_key
+        self._snap_candidate_since = time.monotonic()
+        self._snap_locked = candidate_key
+        self._snap_preview_point = candidate_point
+
+        self._debug(
+            "TURNOUT SNAP CHECK RESULT "
+            f"id={turnout_id} endpoint={endpoint_name} "
+            f"best_kind={candidate_kind} "
+            f"best_target={candidate_track_id}:{candidate_endpoint_name} "
+            f"best_point=({candidate_x:.2f}, {candidate_y:.2f}) "
+            f"best_distance={best_distance:.2f}"
+        )
+
+        self._set_status(
+            f"Snap locked: {turnout_id}:{endpoint_name} -> "
+            f"{candidate_track_id}:{candidate_endpoint_name}"
+        )
 
     def _headings_are_compatible(self, heading_a: float, heading_b: float) -> bool:
         diff = abs((heading_a - heading_b + 180.0) % 360.0 - 180.0)
@@ -2573,6 +3333,18 @@ class LayoutDesignerApp:
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
+
+    def _debug(self, message: str) -> None:
+        line = f"[layout debug] {message}"
+
+        try:
+            with self._debug_log_path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+    def _debug_point(self, label: str, x: float, y: float) -> str:
+        return f"{label}=({x:2f}, {y:2f})"
 
     # ------------------------------------------------------------------
     # Menu commands
