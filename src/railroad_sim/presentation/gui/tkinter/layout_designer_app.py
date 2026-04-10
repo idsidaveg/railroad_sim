@@ -9,7 +9,7 @@ import math
 import time
 import tkinter as tk
 from dataclasses import dataclass, field
-from tkinter import Misc, ttk
+from tkinter import Misc, messagebox, ttk
 from typing import Optional
 from uuid import uuid4
 
@@ -156,7 +156,7 @@ class TurnoutTrackElement:
     common_len: float = 28.0
     straight_len: float = 100.0
     diverge_len: float = 84.0
-    diverge_angle_deg: float = 12.0
+    diverge_angle_deg: float = 14.0
 
     track_id: str = field(default_factory=lambda: str(uuid4()))
 
@@ -267,6 +267,9 @@ class LayoutDesignerApp:
     SNAP_DWELL_SECONDS = 0.18
     ANGLE_COMPATIBILITY_DEG = 30.0
 
+    TURNOUT_ROTATE_HANDLE_OFFSET_PX = 26.0
+    TURNOUT_ROTATE_HANDLE_RADIUS_PX = 8.0
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Layout Designer")
@@ -277,7 +280,7 @@ class LayoutDesignerApp:
         self.traffic_rule_var = tk.StringVar(value=TrackTrafficRule.BIDIRECTIONAL.value)
         self._turnout_hand_var = tk.StringVar(value="right")
         self._turnout_clearance_var = tk.StringVar(value="150.0")
-        self._turnout_diverge_angle_var = tk.StringVar(value="12.0")
+        self._turnout_diverge_angle_var = tk.StringVar(value="14.0")
         self._turnout_straight_len_var = tk.StringVar(value="100.0")
 
         self.selected_tool = tk.StringVar(value="select")
@@ -286,6 +289,7 @@ class LayoutDesignerApp:
         self.snap_to_grid = tk.BooleanVar(value=True)
         self.show_endpoints = tk.BooleanVar(value=True)
         self.show_topology_overlay = tk.BooleanVar(value=False)
+        self.show_labels = tk.BooleanVar(value=True)
 
         self.zoom_scale = 1.0
 
@@ -298,6 +302,19 @@ class LayoutDesignerApp:
 
         self.selected_track_id: str | None = None
         self.selected_turnout_id: str | None = None
+        self.selected_track_ids: set[str] = set()
+        self.selected_turnout_ids: set[str] = set()
+
+        self._marquee_start_world: tuple[float, float] | None = None
+        self._marquee_end_world: tuple[float, float] | None = None
+
+        self._group_drag_track_ids: set[str] = set()
+        self._group_drag_turnout_ids: set[str] = set()
+        self._group_smart_move_active = False
+
+        self._group_snap_candidate: tuple[str, str] | None = None
+        self._group_snap_preview_point: tuple[float, float] | None = None
+        self._group_snap_active_endpoint: tuple[str, str] | None = None
 
         self.tooltip = Tooltip(root)
         self._tooltip_after_id: str | None = None
@@ -311,6 +328,10 @@ class LayoutDesignerApp:
 
         self._hover_track_id: str | None = None
         self._hover_endpoint_name: str | None = None
+        self._rotate_turnout_id: str | None = None
+        self._rotate_pivot_world: tuple[float, float] | None = None
+        self._rotate_start_mouse_angle_deg: float | None = None
+        self._rotate_start_turnout_angle_deg: float | None = None
 
         self._snap_candidate: tuple[str, str] | None = None
         self._snap_candidate_since: float | None = None
@@ -371,6 +392,11 @@ class LayoutDesignerApp:
         view_menu.add_checkbutton(
             label="Show Endpoints",
             variable=self.show_endpoints,
+            command=self._refresh_canvas,
+        )
+        view_menu.add_checkbutton(
+            label="Show Labels",
+            variable=self.show_labels,
             command=self._refresh_canvas,
         )
         view_menu.add_checkbutton(
@@ -459,18 +485,25 @@ class LayoutDesignerApp:
         ).grid(row=0, column=4, padx=(0, 8), sticky="w")
         ttk.Checkbutton(
             frame,
+            text="Labels",
+            variable=self.show_labels,
+            command=self._refresh_canvas,
+        ).grid(row=0, column=5, padx=(0, 8), sticky="w")
+
+        ttk.Checkbutton(
+            frame,
             text="Topology",
             variable=self.show_topology_overlay,
             command=self._refresh_canvas,
-        ).grid(row=0, column=5, padx=(0, 8), sticky="w")
+        ).grid(row=0, column=6, padx=(0, 8), sticky="w")
         ttk.Checkbutton(frame, text="Snap Grid", variable=self.snap_to_grid).grid(
-            row=0, column=6, padx=(0, 8), sticky="w"
+            row=0, column=7, padx=(0, 8), sticky="w"
         )
 
         ttk.Label(
             frame,
             text="Place: select Track, press-drag-release. Edit: drag body to move, Ctrl+drag endpoint to reshape.",
-        ).grid(row=1, column=0, columnspan=7, sticky="w", pady=(8, 0))
+        ).grid(row=1, column=0, columnspan=8, sticky="w", pady=(8, 0))
 
     def _build_canvas_panel(self, parent: ttk.Frame) -> None:
         container = ttk.LabelFrame(parent, text="Design Board", padding=4)
@@ -736,7 +769,25 @@ class LayoutDesignerApp:
         self._set_status(f"Updated traffic rule to: {track.traffic_rule.value}.")
 
     def _apply_turnout_hand(self) -> None:
-        self._set_status("Turnout hand editing is not implemented yet.")
+        if self.selected_turnout_id is None:
+            return
+
+        turnout = self.turnouts[self.selected_turnout_id]
+        new_hand = self._turnout_hand_var.get().strip().lower()
+
+        if new_hand not in {"left", "right"}:
+            self._set_status("Turnout hand must be 'left' or 'right'.")
+            return
+
+        if turnout.hand == new_hand:
+            self._set_status(f"Turnout hand already set to {turnout.hand}.")
+            return
+
+        turnout.hand = new_hand
+        turnout.recalculate_geometry_from_parameters()
+        self._update_turnout_inspector(turnout)
+        self._refresh_canvas()
+        self._set_status(f"Updated turnout hand to {turnout.hand}.")
 
     def _apply_turnout_clearance(self) -> None:
         self._set_status("Turnout clearance editing is not implemented yet.")
@@ -804,7 +855,7 @@ class LayoutDesignerApp:
         ttk.Label(status_frame, textvariable=self.status_var, anchor="w").pack(fill="x")
 
     def _bind_keys(self) -> None:
-        self.root.bind("<Delete>", self._delete_selected)
+        self.root.bind("<Delete>", self._on_delete_key)
         self.root.bind("<Up>", lambda _e: self._nudge_selected(0, -1))
         self.root.bind("<Down>", lambda _e: self._nudge_selected(0, 1))
         self.root.bind("<Left>", lambda _e: self._nudge_selected(-1, 0))
@@ -828,6 +879,19 @@ class LayoutDesignerApp:
 
         for turnout_id in self.turnout_order:
             self._draw_turnout(self.turnouts[turnout_id])
+
+        if (
+            self._marquee_start_world is not None
+            and self._marquee_end_world is not None
+        ):
+            self._draw_marquee_selection_rect()
+
+        if (
+            self._group_smart_move_active
+            and self._group_snap_preview_point is not None
+            and self._group_snap_candidate is not None
+        ):
+            self._draw_group_smart_snap_preview()
 
         if self._snap_preview_point is not None and self._snap_candidate is not None:
             self._draw_snap_preview()
@@ -1038,30 +1102,45 @@ class LayoutDesignerApp:
         # --------------------------------------------------------------
         # Draw the track label slightly above the midpoint of the segment.
         # --------------------------------------------------------------
-        mx, my = self._world_to_screen(*track.midpoint)
-        self.canvas.create_text(
-            mx,
-            my - (16 * self.zoom_scale),
-            text=track.name,
-            font=("Arial", max(8, int(10 * self.zoom_scale))),
-            fill="navy",
-        )
+        if self.show_labels.get():
+            mx, my = self._world_to_screen(*track.midpoint)
+            self.canvas.create_text(
+                mx,
+                my - (16 * self.zoom_scale),
+                text=track.name,
+                font=("Arial", max(8, int(10 * self.zoom_scale))),
+                fill="navy",
+            )
 
         # --------------------------------------------------------------
         # Draw selection rectangle when this track is selected.
         # This uses the full underlying track bbox, not the trimmed render
         # extents, so selection remains easy and consistent.
         # --------------------------------------------------------------
-        if track.track_id == self.selected_track_id:
+
+        is_primary_selected = track.track_id == self.selected_track_id
+        is_group_selected = track.track_id in self.selected_track_ids
+
+        if is_primary_selected or is_group_selected:
             bbox = self._track_screen_bbox(track)
+
+            if is_primary_selected:
+                outline = "#ff9900"
+                width = max(1.0, 2.0 * self.zoom_scale)
+                dash = (4, 2)
+            else:
+                outline = "#2f9e44" if self._group_smart_move_active else "#2f80ed"
+                width = max(1.0, 1.5 * self.zoom_scale)
+                dash = (8, 4)
+
             self.canvas.create_rectangle(
                 bbox[0] - 8,
                 bbox[1] - 8,
                 bbox[2] + 8,
                 bbox[3] + 8,
-                outline="#ff9900",
-                width=max(1.0, 2.0 * self.zoom_scale),
-                dash=(4, 2),
+                outline=outline,
+                width=width,
+                dash=dash,
             )
 
         # --------------------------------------------------------------
@@ -1122,29 +1201,46 @@ class LayoutDesignerApp:
             is_diverging=True,
         )
 
-        mx = (turnout.trunk.x + turnout.straight.x + turnout.diverging.x) / 3.0
-        my = (turnout.trunk.y + turnout.straight.y + turnout.diverging.y) / 3.0
-        smx, smy = self._world_to_screen(mx, my)
+        if self.show_labels.get():
+            mx = (turnout.trunk.x + turnout.straight.x + turnout.diverging.x) / 3.0
+            my = (turnout.trunk.y + turnout.straight.y + turnout.diverging.y) / 3.0
+            smx, smy = self._world_to_screen(mx, my)
 
-        self.canvas.create_text(
-            smx,
-            smy - (24 * self.zoom_scale),
-            text=turnout.name,
-            font=("Arial", max(8, int(10 * self.zoom_scale))),
-            fill="navy",
-        )
+            self.canvas.create_text(
+                smx,
+                smy - (24 * self.zoom_scale),
+                text=turnout.name,
+                font=("Arial", max(8, int(10 * self.zoom_scale))),
+                fill="navy",
+            )
 
-        if turnout.track_id == self.selected_turnout_id:
+        is_primary_selected = turnout.track_id == self.selected_turnout_id
+        is_group_selected = turnout.track_id in self.selected_turnout_ids
+
+        if is_primary_selected or is_group_selected:
             bbox = self._turnout_screen_bbox(turnout)
+
+            if is_primary_selected:
+                outline = "#ff9900"
+                width = max(1.0, 2.0 * self.zoom_scale)
+                dash = (4, 2)
+            else:
+                outline = "#2f9e44" if self._group_smart_move_active else "#2f80ed"
+                width = max(1.0, 1.5 * self.zoom_scale)
+                dash = (8, 4)
+
             self.canvas.create_rectangle(
                 bbox[0] - 8,
                 bbox[1] - 8,
                 bbox[2] + 8,
                 bbox[3] + 8,
-                outline="#ff9900",
-                width=max(1.0, 2.0 * self.zoom_scale),
-                dash=(4, 2),
+                outline=outline,
+                width=width,
+                dash=dash,
             )
+
+        if is_primary_selected:
+            self._draw_turnout_rotate_handle(turnout)
 
         if self.show_endpoints.get() or turnout.track_id == self.selected_turnout_id:
             self._draw_turnout_endpoint(turnout, "trunk")
@@ -1358,6 +1454,44 @@ class LayoutDesignerApp:
             width=width,
         )
 
+    def _draw_turnout_rotate_handle(self, turnout: TurnoutTrackElement) -> None:
+        sx, sy = self._turnout_rotate_handle_screen_position(turnout)
+        radius = self.TURNOUT_ROTATE_HANDLE_RADIUS_PX * self.zoom_scale
+
+        center_x, center_y = self._turnout_center_world(turnout)
+        scx, scy = self._world_to_screen(center_x, center_y)
+
+        self.canvas.create_line(
+            scx,
+            scy,
+            sx,
+            sy,
+            fill="#cc8400",
+            width=max(1.0, 1.5 * self.zoom_scale),
+            dash=(3, 2),
+        )
+
+        self.canvas.create_oval(
+            sx - radius,
+            sy - radius,
+            sx + radius,
+            sy + radius,
+            outline="#cc8400",
+            fill="#fff4d6",
+            width=max(1.0, 1.5 * self.zoom_scale),
+        )
+
+        arrow_half = max(4.0, 5.0 * self.zoom_scale)
+        self.canvas.create_line(
+            sx - arrow_half,
+            sy,
+            sx + arrow_half,
+            sy,
+            fill="#8a5a00",
+            width=max(1.0, 1.5 * self.zoom_scale),
+            arrow=tk.BOTH,
+        )
+
     def _turnout_screen_bbox(
         self,
         turnout: TurnoutTrackElement,
@@ -1371,6 +1505,40 @@ class LayoutDesignerApp:
         xs = [point[0] for point in points]
         ys = [point[1] for point in points]
         return (min(xs), min(ys), max(xs), max(ys))
+
+    def _turnout_center_world(
+        self,
+        turnout: TurnoutTrackElement,
+    ) -> tuple[float, float]:
+        xs = [
+            turnout.trunk.x,
+            turnout.split_x,
+            turnout.straight.x,
+            turnout.diverging.x,
+        ]
+        ys = [
+            turnout.trunk.y,
+            turnout.split_y,
+            turnout.straight.y,
+            turnout.diverging.y,
+        ]
+        return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+
+    def _turnout_rotate_handle_screen_position(
+        self,
+        turnout: TurnoutTrackElement,
+    ) -> tuple[float, float]:
+        bbox = self._turnout_screen_bbox(turnout)
+        cx = (bbox[0] + bbox[2]) / 2.0
+        cy = bbox[1] - (self.TURNOUT_ROTATE_HANDLE_OFFSET_PX * self.zoom_scale)
+        return (cx, cy)
+
+    def _turnout_rotate_handle_world_position(
+        self,
+        turnout: TurnoutTrackElement,
+    ) -> tuple[float, float]:
+        sx, sy = self._turnout_rotate_handle_screen_position(turnout)
+        return self._screen_to_world(sx, sy)
 
     def _draw_endpoint(self, track: StraightTrackElement, endpoint_name: str) -> None:
         endpoint = track.endpoint(endpoint_name)
@@ -1439,6 +1607,197 @@ class LayoutDesignerApp:
             dash=(3, 2),
         )
 
+    def _draw_marquee_selection_rect(self) -> None:
+        if self._marquee_start_world is None or self._marquee_end_world is None:
+            return
+
+        sx1, sy1 = self._world_to_screen(*self._marquee_start_world)
+        sx2, sy2 = self._world_to_screen(*self._marquee_end_world)
+
+        dash_len = max(4, int(6 * self.zoom_scale))
+        gap_len = max(2, int(4 * self.zoom_scale))
+
+        self.canvas.create_rectangle(
+            sx1,
+            sy1,
+            sx2,
+            sy2,
+            outline="#2f80ed",
+            width=max(1.0, 1.5 * self.zoom_scale),
+            dash=(dash_len, gap_len),
+            fill="",
+        )
+
+    def _draw_group_smart_snap_preview(self) -> None:
+        if self._group_snap_preview_point is None:
+            return
+
+        sx, sy = self._world_to_screen(*self._group_snap_preview_point)
+        radius = self.SNAP_COMMIT_RADIUS_PX * self.zoom_scale
+
+        self.canvas.create_oval(
+            sx - radius,
+            sy - radius,
+            sx + radius,
+            sy + radius,
+            outline="#2f9e44",
+            width=max(1.0, 2.0 * self.zoom_scale),
+            dash=(3, 2),
+        )
+
+        preview_radius = self.SNAP_PREVIEW_RADIUS_PX * self.zoom_scale
+        self.canvas.create_oval(
+            sx - preview_radius,
+            sy - preview_radius,
+            sx + preview_radius,
+            sy + preview_radius,
+            outline="#b7e4c7",
+        )
+
+    def _marquee_world_bbox(self) -> tuple[float, float, float, float] | None:
+        if self._marquee_start_world is None or self._marquee_end_world is None:
+            return None
+
+        x1, y1 = self._marquee_start_world
+        x2, y2 = self._marquee_end_world
+
+        return (
+            min(x1, x2),
+            min(y1, y2),
+            max(x1, x2),
+            max(y1, y2),
+        )
+
+    def _track_is_inside_marquee(
+        self,
+        track: StraightTrackElement,
+        bbox: tuple[float, float, float, float],
+    ) -> bool:
+        min_x, min_y, max_x, max_y = bbox
+
+        return (
+            min_x <= track.x1 <= max_x
+            and min_y <= track.y1 <= max_y
+            and min_x <= track.x2 <= max_x
+            and min_y <= track.y2 <= max_y
+        )
+
+    def _turnout_is_inside_marquee(
+        self,
+        turnout: TurnoutTrackElement,
+        bbox: tuple[float, float, float, float],
+    ) -> bool:
+        min_x, min_y, max_x, max_y = bbox
+
+        points = (
+            (turnout.trunk.x, turnout.trunk.y),
+            (turnout.split_x, turnout.split_y),
+            (turnout.straight.x, turnout.straight.y),
+            (turnout.diverging.x, turnout.diverging.y),
+        )
+
+        return all(min_x <= x <= max_x and min_y <= y <= max_y for x, y in points)
+
+    def _commit_marquee_selection(self) -> None:
+        bbox = self._marquee_world_bbox()
+        if bbox is None:
+            return
+
+        self.selected_track_ids.clear()
+        self.selected_turnout_ids.clear()
+
+        for track_id, track in self.tracks.items():
+            if self._track_is_inside_marquee(track, bbox):
+                self.selected_track_ids.add(track_id)
+
+        for turnout_id, turnout in self.turnouts.items():
+            if self._turnout_is_inside_marquee(turnout, bbox):
+                self.selected_turnout_ids.add(turnout_id)
+
+        self.selected_track_id = None
+        self.selected_turnout_id = None
+
+        # Prefer the topmost enclosed turnout first, then the topmost enclosed track,
+        # based on current draw order.
+        for turnout_id in reversed(self.turnout_order):
+            if turnout_id in self.selected_turnout_ids:
+                self.selected_turnout_id = turnout_id
+                self._update_turnout_inspector(self.turnouts[turnout_id])
+                break
+
+        if self.selected_turnout_id is None:
+            for track_id in reversed(self.track_order):
+                if track_id in self.selected_track_ids:
+                    self.selected_track_id = track_id
+                    self._update_inspector(self.tracks[track_id])
+                    break
+
+        if self.selected_track_id is None and self.selected_turnout_id is None:
+            self._update_inspector(None)
+
+        total = len(self.selected_track_ids) + len(self.selected_turnout_ids)
+        self._set_status(f"Marquee selected {total} object(s).")
+
+    def _sync_primary_selection_from_group(self) -> None:
+        self.selected_track_id = None
+        self.selected_turnout_id = None
+
+        for turnout_id in reversed(self.turnout_order):
+            if turnout_id in self.selected_turnout_ids:
+                self.selected_turnout_id = turnout_id
+                self._update_turnout_inspector(self.turnouts[turnout_id])
+                return
+
+        for track_id in reversed(self.track_order):
+            if track_id in self.selected_track_ids:
+                self.selected_track_id = track_id
+                self._update_inspector(self.tracks[track_id])
+                return
+
+        self._update_inspector(None)
+
+    def _has_active_group_selection(self) -> bool:
+        total = len(self.selected_track_ids) + len(self.selected_turnout_ids)
+        return total > 1
+
+    def _hit_is_in_selected_group(self, hit: dict[str, str]) -> bool:
+        if hit["type"] == "track":
+            return hit["track_id"] in self.selected_track_ids
+
+        if hit["type"] == "turnout":
+            return hit["turnout_id"] in self.selected_turnout_ids
+
+        return False
+
+    def _toggle_group_selection_for_hit(self, hit: dict[str, str]) -> None:
+        if hit["type"] == "track":
+            track_id = hit["track_id"]
+
+            if track_id in self.selected_track_ids:
+                self.selected_track_ids.remove(track_id)
+            else:
+                self.selected_track_ids.add(track_id)
+
+            if self.selected_track_id == track_id:
+                self.selected_track_id = None
+
+        elif hit["type"] == "turnout":
+            turnout_id = hit["turnout_id"]
+
+            if turnout_id in self.selected_turnout_ids:
+                self.selected_turnout_ids.remove(turnout_id)
+            else:
+                self.selected_turnout_ids.add(turnout_id)
+
+            if self.selected_turnout_id == turnout_id:
+                self.selected_turnout_id = None
+
+        self._sync_primary_selection_from_group()
+
+        total = len(self.selected_track_ids) + len(self.selected_turnout_ids)
+        self._set_status(f"Group selection now contains {total} object(s).")
+        self._refresh_canvas()
+
     def _draw_topology_endpoint_overlay(
         self, track: StraightTrackElement, endpoint_name: str
     ) -> None:
@@ -1482,6 +1841,8 @@ class LayoutDesignerApp:
 
         state = int(getattr(event, "state", 0))
         ctrl_down = bool(state & 0x0004)
+        shift_down = bool(state & 0x0001)
+        alt_down = bool(state & 0x0008)
         hit = self._hit_test(world_x, world_y)
         tool = self.selected_tool.get()
 
@@ -1493,18 +1854,71 @@ class LayoutDesignerApp:
             self._begin_turnout_creation(world_x, world_y)
             return
 
+        if shift_down and tool == "select":
+            self._drag_mode = "marquee_select"
+            self._drag_track_id = None
+            self._drag_endpoint_name = None
+            self._drag_last_world = None
+
+            self._marquee_start_world = (world_x, world_y)
+            self._marquee_end_world = (world_x, world_y)
+
+            self._refresh_canvas()
+            self._set_status("Marquee selection started.")
+            return
+
         if hit is None:
             self.selected_track_id = None
             self.selected_turnout_id = None
+            self.selected_track_ids.clear()
+            self.selected_turnout_ids.clear()
+
             self._drag_mode = None
             self._drag_track_id = None
             self._drag_endpoint_name = None
+
             self._update_inspector(None)
             self._refresh_canvas()
             self._set_status("Selection cleared.")
             return
 
+        if ctrl_down and tool == "select":
+            self._drag_mode = None
+            self._drag_track_id = None
+            self._drag_endpoint_name = None
+            self._drag_last_world = None
+            self._toggle_group_selection_for_hit(hit)
+            return
+
+        if (
+            tool == "select"
+            and hit is not None
+            and self._has_active_group_selection()
+            and self._hit_is_in_selected_group(hit)
+            and hit["part"] == "body"
+        ):
+            self._drag_mode = "group_move"
+            self._drag_track_id = None
+            self._drag_endpoint_name = None
+            self._drag_last_world = (world_x, world_y)
+
+            self._group_drag_track_ids = set(self.selected_track_ids)
+            self._group_drag_turnout_ids = set(self.selected_turnout_ids)
+            self._group_smart_move_active = alt_down
+
+            self._clear_group_external_connections()
+
+            self._refresh_canvas()
+            if self._group_smart_move_active:
+                self._set_status("Smart moving selected group.")
+            else:
+                self._set_status("Moving selected group.")
+            return
+
         if hit["type"] == "track":
+            self.selected_track_ids.clear()
+            self.selected_turnout_ids.clear()
+
             self.selected_track_id = hit["track_id"]
             self.selected_turnout_id = None
 
@@ -1533,6 +1947,9 @@ class LayoutDesignerApp:
             return
 
         if hit["type"] == "turnout":
+            self.selected_track_ids.clear()
+            self.selected_turnout_ids.clear()
+
             self.selected_turnout_id = hit["turnout_id"]
             self.selected_track_id = None
             self._drag_track_id = None
@@ -1540,7 +1957,50 @@ class LayoutDesignerApp:
 
             turnout = self.turnouts[self.selected_turnout_id]
 
-            if hit["part"] == "endpoint":
+            if hit["part"] == "rotate_handle":
+                self._drag_mode = "turnout_rotate"
+                self._drag_endpoint_name = None
+                self._rotate_turnout_id = turnout.track_id
+
+                # --------------------------------------------------
+                # CLEAR CONNECTIONS BEFORE ROTATION
+                # --------------------------------------------------
+                for endpoint_name, endpoint in turnout.endpoints().items():
+                    if endpoint.connected_to_track_id is None:
+                        continue
+
+                    other_id = endpoint.connected_to_track_id
+                    other_endpoint_name = endpoint.connected_to_endpoint_name
+
+                    endpoint.connected_to_track_id = None
+                    endpoint.connected_to_endpoint_name = None
+
+                    if other_id and other_endpoint_name:
+                        other_track = self.tracks.get(other_id)
+                        if other_track:
+                            other_ep = other_track.endpoint(other_endpoint_name)
+                            if other_ep.connected_to_track_id == turnout.track_id:
+                                other_ep.connected_to_track_id = None
+                                other_ep.connected_to_endpoint_name = None
+
+                        other_turnout = self.turnouts.get(other_id)
+                        if other_turnout:
+                            other_ep = other_turnout.endpoints()[other_endpoint_name]
+                            if other_ep.connected_to_track_id == turnout.track_id:
+                                other_ep.connected_to_track_id = None
+                                other_ep.connected_to_endpoint_name = None
+
+                pivot_x, pivot_y = self._turnout_center_world(turnout)
+                self._rotate_pivot_world = (pivot_x, pivot_y)
+
+                self._rotate_start_mouse_angle_deg = math.degrees(
+                    math.atan2(world_y - pivot_y, world_x - pivot_x)
+                )
+                self._rotate_start_turnout_angle_deg = turnout.angle_deg
+
+                self._set_status(f"Rotating {turnout.name}.")
+
+            elif hit["part"] == "endpoint":
                 self._drag_mode = "turnout_endpoint"
                 self._drag_endpoint_name = hit["endpoint_name"]
                 self._set_status(
@@ -1555,9 +2015,63 @@ class LayoutDesignerApp:
             self._refresh_canvas()
             return
 
-    # new code without
     def _on_canvas_drag(self, event: tk.Event) -> None:
         world_x, world_y = self._event_world(event)
+
+        if self._drag_mode == "marquee_select":
+            self._marquee_end_world = (world_x, world_y)
+            self._refresh_canvas()
+            return
+
+        if self._drag_mode == "group_move" and self._drag_last_world is not None:
+            dx = world_x - self._drag_last_world[0]
+            dy = world_y - self._drag_last_world[1]
+
+            for track_id in self._group_drag_track_ids:
+                track = self.tracks.get(track_id)
+                if track is not None:
+                    track.move_by(dx, dy)
+
+            for turnout_id in self._group_drag_turnout_ids:
+                turnout = self.turnouts.get(turnout_id)
+                if turnout is not None:
+                    turnout.x += dx
+                    turnout.y += dy
+                    turnout.recalculate_geometry_from_parameters()
+
+            self._drag_last_world = (world_x, world_y)
+
+            if self._group_smart_move_active:
+                candidate = self._find_best_group_smart_snap_candidate()
+                if candidate is None:
+                    self._group_snap_candidate = None
+                    self._group_snap_active_endpoint = None
+                    self._group_snap_preview_point = None
+                else:
+                    (
+                        external_candidate,
+                        moving_candidate,
+                        preview_point,
+                    ) = candidate
+                    self._group_snap_candidate = external_candidate
+                    self._group_snap_active_endpoint = moving_candidate
+                    self._group_snap_preview_point = preview_point
+            else:
+                self._group_snap_candidate = None
+                self._group_snap_active_endpoint = None
+                self._group_snap_preview_point = None
+
+            if self.selected_turnout_id is not None:
+                turnout = self.turnouts.get(self.selected_turnout_id)
+                if turnout is not None:
+                    self._update_turnout_inspector(turnout)
+            elif self.selected_track_id is not None:
+                track = self.tracks.get(self.selected_track_id)
+                if track is not None:
+                    self._update_inspector(track)
+
+            self._refresh_canvas()
+            return
 
         if self._drag_mode == "create" and self._create_track_id is not None:
             track = self.tracks[self._create_track_id]
@@ -1628,6 +2142,53 @@ class LayoutDesignerApp:
 
         if self.selected_turnout_id is not None and self._drag_last_world is not None:
             turnout = self.turnouts[self.selected_turnout_id]
+
+            # ----------------------------------------------------------
+            # TURNOUT ROTATION
+            # ----------------------------------------------------------
+            if self._drag_mode == "turnout_rotate" and self._rotate_turnout_id:
+                if (
+                    self._rotate_pivot_world is None
+                    or self._rotate_start_mouse_angle_deg is None
+                    or self._rotate_start_turnout_angle_deg is None
+                ):
+                    return
+
+                turnout = self.turnouts[self._rotate_turnout_id]
+
+                pivot_x, pivot_y = self._rotate_pivot_world
+
+                current_mouse_angle = math.degrees(
+                    math.atan2(world_y - pivot_y, world_x - pivot_x)
+                )
+
+                # changes to handle 15 degree increments rotate
+                delta_angle = current_mouse_angle - self._rotate_start_mouse_angle_deg
+                new_angle = self._rotate_start_turnout_angle_deg + delta_angle
+
+                state = int(getattr(event, "state", 0))
+                shift_down = bool(state & 0x0001)
+                if shift_down:
+                    new_angle = self._snap_angle(new_angle, 15.0)
+
+                # normalize to [-180, 180]
+                new_angle = (new_angle + 180.0) % 360.0 - 180.0
+
+                # Preserve the visual pivot during rotation.
+                old_center_x, old_center_y = self._turnout_center_world(turnout)
+
+                turnout.angle_deg = new_angle
+                turnout.recalculate_geometry_from_parameters()
+
+                new_center_x, new_center_y = self._turnout_center_world(turnout)
+
+                turnout.x += old_center_x - new_center_x
+                turnout.y += old_center_y - new_center_y
+                turnout.recalculate_geometry_from_parameters()
+
+                self._update_turnout_inspector(turnout)
+                self._refresh_canvas()
+                return
 
             if self._drag_mode == "move":
                 dx = world_x - self._drag_last_world[0]
@@ -1862,6 +2423,26 @@ class LayoutDesignerApp:
             track.move_by(dx, dy)
 
     def _on_canvas_release(self, event: tk.Event) -> None:
+        if self._drag_mode == "marquee_select":
+            self._commit_marquee_selection()
+            self._end_drag()
+            self._refresh_canvas()
+            return
+
+        if self._drag_mode == "group_move":
+            total = len(self.selected_track_ids) + len(self.selected_turnout_ids)
+            snapped = self._commit_group_smart_snap_if_available()
+            self._end_drag()
+            self._refresh_canvas()
+
+            if snapped:
+                self._set_status(
+                    f"Smart moved selected group ({total} object(s)) and connected."
+                )
+            else:
+                self._set_status(f"Moved selected group ({total} object(s)).")
+            return
+
         if self._drag_mode == "create" and self._create_track_id is not None:
             track = self.tracks[self._create_track_id]
             if track.pixel_length < 4.0:
@@ -1955,6 +2536,43 @@ class LayoutDesignerApp:
         self._end_drag()
         self._refresh_canvas()
 
+    def _on_delete_key(self, _event: tk.Event | None = None) -> None:
+        track_ids_to_delete = set(self.selected_track_ids)
+        turnout_ids_to_delete = set(self.selected_turnout_ids)
+
+        if not track_ids_to_delete and not turnout_ids_to_delete:
+            if self.selected_track_id is not None:
+                track_ids_to_delete.add(self.selected_track_id)
+            if self.selected_turnout_id is not None:
+                turnout_ids_to_delete.add(self.selected_turnout_id)
+
+        total = len(track_ids_to_delete) + len(turnout_ids_to_delete)
+        if total == 0:
+            return
+
+        confirmed = messagebox.askyesno(
+            "Confirm Delete",
+            f"Delete {total} selected object(s)?",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        for track_id in list(track_ids_to_delete):
+            self._delete_track(track_id)
+
+        for turnout_id in list(turnout_ids_to_delete):
+            self._delete_turnout(turnout_id)
+
+        self.selected_track_id = None
+        self.selected_turnout_id = None
+        self.selected_track_ids.clear()
+        self.selected_turnout_ids.clear()
+
+        self._update_inspector(None)
+        self._refresh_canvas()
+        self._set_status(f"Deleted {total} object(s).")
+
     def _on_canvas_motion(self, event: tk.Event) -> None:
         world_x, world_y = self._event_world(event)
         hit = self._hit_test(world_x, world_y)
@@ -2014,10 +2632,17 @@ class LayoutDesignerApp:
             y2=y,
             length_ft=100.0,
         )
+
         self.tracks[track_id] = new_track
         self.track_order.append(track_id)
+
         self.selected_track_id = track_id
+        self.selected_turnout_id = None
+        self.selected_track_ids.clear()
+        self.selected_turnout_ids.clear()
+
         self._create_track_id = track_id
+
         self._drag_track_id = track_id
         self._drag_mode = "create"
         self._drag_endpoint_name = "B"
@@ -2046,6 +2671,8 @@ class LayoutDesignerApp:
 
         self.selected_track_id = None
         self.selected_turnout_id = turnout.track_id
+        self.selected_track_ids.clear()
+        self.selected_turnout_ids.clear()
 
         self._update_turnout_inspector(turnout)
         self._refresh_canvas()
@@ -2136,6 +2763,306 @@ class LayoutDesignerApp:
                 other_endpoint.connected_to_track_id = None
                 other_endpoint.connected_to_endpoint_name = None
 
+    def _clear_turnout_endpoint_connection(
+        self,
+        turnout: TurnoutTrackElement,
+        endpoint_name: str,
+    ) -> None:
+        endpoint = turnout.endpoints()[endpoint_name]
+        other_track_id = endpoint.connected_to_track_id
+        other_endpoint_name = endpoint.connected_to_endpoint_name
+
+        endpoint.connected_to_track_id = None
+        endpoint.connected_to_endpoint_name = None
+
+        if other_track_id is None or other_endpoint_name is None:
+            return
+
+        other_track = self.tracks.get(other_track_id)
+        if other_track is not None:
+            other_endpoint = other_track.endpoint(other_endpoint_name)
+            if other_endpoint.connected_to_track_id == turnout.track_id:
+                other_endpoint.connected_to_track_id = None
+                other_endpoint.connected_to_endpoint_name = None
+            return
+
+        other_turnout = self.turnouts.get(other_track_id)
+        if other_turnout is not None:
+            other_endpoint = other_turnout.endpoints()[other_endpoint_name]
+            if other_endpoint.connected_to_track_id == turnout.track_id:
+                other_endpoint.connected_to_track_id = None
+                other_endpoint.connected_to_endpoint_name = None
+
+    def _clear_group_external_connections(self) -> None:
+        selected_ids = set(self.selected_track_ids) | set(self.selected_turnout_ids)
+
+        if not selected_ids:
+            return
+
+        for track_id in list(self.selected_track_ids):
+            track = self.tracks.get(track_id)
+            if track is None:
+                continue
+
+            for endpoint_name in ("A", "B"):
+                endpoint = track.endpoint(endpoint_name)
+                other_id = endpoint.connected_to_track_id
+
+                if other_id is None:
+                    continue
+
+                if other_id not in selected_ids:
+                    self._clear_endpoint_connection(track, endpoint_name)
+
+        for turnout_id in list(self.selected_turnout_ids):
+            turnout = self.turnouts.get(turnout_id)
+            if turnout is None:
+                continue
+
+            for endpoint_name in ("trunk", "straight", "diverging"):
+                endpoint = turnout.endpoints()[endpoint_name]
+                other_id = endpoint.connected_to_track_id
+
+                if other_id is None:
+                    continue
+
+                if other_id not in selected_ids:
+                    self._clear_turnout_endpoint_connection(turnout, endpoint_name)
+
+    def _collect_group_open_endpoints(
+        self,
+    ) -> list[tuple[str, str, float, float, float]]:
+        endpoints: list[tuple[str, str, float, float, float]] = []
+
+        for track_id in self._group_drag_track_ids:
+            track = self.tracks.get(track_id)
+            if track is None:
+                continue
+
+            for endpoint_name in ("A", "B"):
+                endpoint = track.endpoint(endpoint_name)
+                if endpoint.connected_to_track_id is not None:
+                    continue
+
+                heading_deg = self._endpoint_heading_deg(track, endpoint_name)
+                endpoints.append(
+                    (
+                        track_id,
+                        endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        heading_deg,
+                    )
+                )
+
+        for turnout_id in self._group_drag_turnout_ids:
+            turnout = self.turnouts.get(turnout_id)
+            if turnout is None:
+                continue
+
+            for endpoint_name, endpoint in turnout.endpoints().items():
+                if endpoint.connected_to_track_id is not None:
+                    continue
+
+                heading_deg = self._turnout_endpoint_heading_deg(turnout, endpoint_name)
+                endpoints.append(
+                    (
+                        turnout_id,
+                        endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        heading_deg,
+                    )
+                )
+
+        return endpoints
+
+    def _collect_external_open_endpoints(
+        self,
+    ) -> list[tuple[str, str, float, float, float]]:
+        endpoints: list[tuple[str, str, float, float, float]] = []
+
+        selected_ids = set(self._group_drag_track_ids) | set(
+            self._group_drag_turnout_ids
+        )
+
+        for track_id, track in self.tracks.items():
+            if track_id in selected_ids:
+                continue
+
+            for endpoint_name in ("A", "B"):
+                endpoint = track.endpoint(endpoint_name)
+                if endpoint.connected_to_track_id is not None:
+                    continue
+
+                heading_deg = self._endpoint_heading_deg(track, endpoint_name)
+                endpoints.append(
+                    (
+                        track_id,
+                        endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        heading_deg,
+                    )
+                )
+
+        for turnout_id, turnout in self.turnouts.items():
+            if turnout_id in selected_ids:
+                continue
+
+            for endpoint_name, endpoint in turnout.endpoints().items():
+                if endpoint.connected_to_track_id is not None:
+                    continue
+
+                heading_deg = self._turnout_endpoint_heading_deg(turnout, endpoint_name)
+                endpoints.append(
+                    (
+                        turnout_id,
+                        endpoint_name,
+                        endpoint.x,
+                        endpoint.y,
+                        heading_deg,
+                    )
+                )
+
+        return endpoints
+
+    def _get_object_endpoint_world_position(
+        self,
+        object_id: str,
+        endpoint_name: str,
+    ) -> tuple[float, float] | None:
+        track = self.tracks.get(object_id)
+        if track is not None:
+            endpoint = track.endpoint(endpoint_name)
+            return (endpoint.x, endpoint.y)
+
+        turnout = self.turnouts.get(object_id)
+        if turnout is not None:
+            endpoint = turnout.endpoints()[endpoint_name]
+            return (endpoint.x, endpoint.y)
+
+        return None
+
+    def _connect_designer_endpoints(
+        self,
+        first_id: str,
+        first_endpoint_name: str,
+        second_id: str,
+        second_endpoint_name: str,
+    ) -> None:
+        first_track = self.tracks.get(first_id)
+        first_turnout = self.turnouts.get(first_id)
+
+        second_track = self.tracks.get(second_id)
+        second_turnout = self.turnouts.get(second_id)
+
+        if first_track is not None:
+            first_endpoint = first_track.endpoint(first_endpoint_name)
+        elif first_turnout is not None:
+            first_endpoint = first_turnout.endpoints()[first_endpoint_name]
+        else:
+            return
+
+        if second_track is not None:
+            second_endpoint = second_track.endpoint(second_endpoint_name)
+        elif second_turnout is not None:
+            second_endpoint = second_turnout.endpoints()[second_endpoint_name]
+        else:
+            return
+
+        first_endpoint.connected_to_track_id = second_id
+        first_endpoint.connected_to_endpoint_name = second_endpoint_name
+        second_endpoint.connected_to_track_id = first_id
+        second_endpoint.connected_to_endpoint_name = first_endpoint_name
+
+    def _commit_group_smart_snap_if_available(self) -> bool:
+        if (
+            not self._group_smart_move_active
+            or self._group_snap_candidate is None
+            or self._group_snap_active_endpoint is None
+            or self._group_snap_preview_point is None
+        ):
+            return False
+
+        target_id, target_endpoint_name = self._group_snap_candidate
+        moving_id, moving_endpoint_name = self._group_snap_active_endpoint
+        target_x, target_y = self._group_snap_preview_point
+
+        moving_position = self._get_object_endpoint_world_position(
+            moving_id,
+            moving_endpoint_name,
+        )
+        if moving_position is None:
+            return False
+
+        moving_x, moving_y = moving_position
+        dx = target_x - moving_x
+        dy = target_y - moving_y
+
+        for track_id in self._group_drag_track_ids:
+            track = self.tracks.get(track_id)
+            if track is not None:
+                track.move_by(dx, dy)
+
+        for turnout_id in self._group_drag_turnout_ids:
+            turnout = self.turnouts.get(turnout_id)
+            if turnout is not None:
+                turnout.x += dx
+                turnout.y += dy
+                turnout.recalculate_geometry_from_parameters()
+
+        self._connect_designer_endpoints(
+            moving_id,
+            moving_endpoint_name,
+            target_id,
+            target_endpoint_name,
+        )
+
+        return True
+
+    def _find_best_group_smart_snap_candidate(
+        self,
+    ) -> tuple[tuple[str, str], tuple[str, str], tuple[float, float]] | None:
+        moving_endpoints = self._collect_group_open_endpoints()
+        external_endpoints = self._collect_external_open_endpoints()
+
+        best: tuple[tuple[str, str], tuple[str, str], tuple[float, float]] | None = None
+        best_distance = float("inf")
+
+        preview_radius = self.SNAP_PREVIEW_RADIUS_PX / max(self.zoom_scale, 0.001)
+
+        for (
+            moving_id,
+            moving_endpoint_name,
+            moving_x,
+            moving_y,
+            moving_heading,
+        ) in moving_endpoints:
+            for (
+                external_id,
+                external_endpoint_name,
+                external_x,
+                external_y,
+                external_heading,
+            ) in external_endpoints:
+                distance = math.hypot(external_x - moving_x, external_y - moving_y)
+                if distance > preview_radius:
+                    continue
+
+                if not self._headings_are_compatible(moving_heading, external_heading):
+                    continue
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best = (
+                        (external_id, external_endpoint_name),
+                        (moving_id, moving_endpoint_name),
+                        (external_x, external_y),
+                    )
+
+        return best
+
     def _commit_snap_if_locked(
         self, active_track_id: str, active_endpoint_name: str
     ) -> None:
@@ -2151,7 +3078,22 @@ class LayoutDesignerApp:
 
         active_track = self.tracks[active_track_id]
         x, y = self._snap_preview_point
-        active_track.set_endpoint(active_endpoint_name, x, y)
+
+        target_turnout = self.turnouts.get(target_track_id)
+        if target_turnout is not None:
+            target_heading_deg = self._turnout_endpoint_heading_deg(
+                target_turnout,
+                target_endpoint_name,
+            )
+            self._align_track_endpoint_to_target_tangent(
+                track=active_track,
+                active_endpoint_name=active_endpoint_name,
+                target_heading_deg=target_heading_deg,
+                snap_x=x,
+                snap_y=y,
+            )
+        else:
+            active_track.set_endpoint(active_endpoint_name, x, y)
 
         self._clear_endpoint_connection(active_track, active_endpoint_name)
 
@@ -2174,6 +3116,41 @@ class LayoutDesignerApp:
         active_endpoint.connected_to_endpoint_name = target_endpoint_name
         target_endpoint.connected_to_track_id = active_track_id
         target_endpoint.connected_to_endpoint_name = active_endpoint_name
+
+    def _normalize_angle_deg(self, angle_deg: float) -> float:
+        return (angle_deg + 180.0) % 360.0 - 180.0
+
+    def _align_track_endpoint_to_target_tangent(
+        self,
+        *,
+        track: StraightTrackElement,
+        active_endpoint_name: str,
+        target_heading_deg: float,
+        snap_x: float,
+        snap_y: float,
+    ) -> None:
+        """
+        Keep the snapped endpoint fixed, preserve track length, and rotate the
+        straight segment so it leaves the connection tangent to the target.
+        """
+
+        length = track.pixel_length
+        heading_rad = math.radians(target_heading_deg)
+
+        free_x = snap_x + (length * math.cos(heading_rad))
+        free_y = snap_y + (length * math.sin(heading_rad))
+
+        if active_endpoint_name == "A":
+            track.set_endpoint("A", snap_x, snap_y)
+            track.set_endpoint("B", free_x, free_y)
+            return
+
+        if active_endpoint_name == "B":
+            track.set_endpoint("B", snap_x, snap_y)
+            track.set_endpoint("A", free_x, free_y)
+            return
+
+        raise ValueError(f"Unknown endpoint name: {active_endpoint_name}")
 
     # new debug code start
     def _commit_turnout_snap_if_locked(
@@ -2482,10 +3459,25 @@ class LayoutDesignerApp:
         self._drag_endpoint_name = None
         self._drag_last_world = None
         self._create_track_id = None
+        self._rotate_turnout_id = None
+        self._rotate_pivot_world = None
+        self._rotate_start_mouse_angle_deg = None
+        self._rotate_start_turnout_angle_deg = None
+
         self._snap_candidate = None
         self._snap_candidate_since = None
         self._snap_locked = None
         self._snap_preview_point = None
+
+        self._marquee_start_world = None
+        self._marquee_end_world = None
+
+        self._group_drag_track_ids.clear()
+        self._group_drag_turnout_ids.clear()
+        self._group_smart_move_active = False
+        self._group_snap_candidate = None
+        self._group_snap_preview_point = None
+        self._group_snap_active_endpoint = None
 
     # ------------------------------------------------------------------
     # Snapping
@@ -2870,12 +3862,36 @@ class LayoutDesignerApp:
         # continuation, so compatibility is based on being near 180° apart.
         return abs(diff - 180.0) <= self.ANGLE_COMPATIBILITY_DEG
 
+    def _snap_angle(self, angle_deg: float, increment_deg: float) -> float:
+        if increment_deg <= 0.0:
+            return angle_deg
+        return round(angle_deg / increment_deg) * increment_deg
+
     # ------------------------------------------------------------------
     # Hit testing / coordinates
     # ------------------------------------------------------------------
     def _hit_test(self, world_x: float, world_y: float) -> dict[str, str] | None:
         # ----------------------------------------------------------
-        # TURNOUT endpoint hit (highest priority)
+        # TURNOUT rotate handle hit (highest priority)
+        # ----------------------------------------------------------
+        for turnout_id in reversed(self.turnout_order):
+            turnout = self.turnouts[turnout_id]
+            if turnout.track_id != self.selected_turnout_id:
+                continue
+
+            handle_x, handle_y = self._turnout_rotate_handle_world_position(turnout)
+            if math.hypot(handle_x - world_x, handle_y - world_y) <= (
+                self.TURNOUT_ROTATE_HANDLE_RADIUS_PX + 4.0
+            ) / max(self.zoom_scale, 0.001):
+                return {
+                    "type": "turnout",
+                    "turnout_id": turnout_id,
+                    "part": "rotate_handle",
+                    "endpoint_name": "",
+                }
+
+        # ----------------------------------------------------------
+        # TURNOUT endpoint hit
         # ----------------------------------------------------------
         for turnout_id in reversed(self.turnout_order):
             turnout = self.turnouts[turnout_id]
@@ -3121,7 +4137,7 @@ class LayoutDesignerApp:
             self.name_entry_var.set("")
             self._turnout_hand_var.set("right")
             self._turnout_clearance_var.set("150.0")
-            self._turnout_diverge_angle_var.set("12.0")
+            self._turnout_diverge_angle_var.set("14.0")
             self._turnout_straight_len_var.set("100.0")
             text = (
                 "Select a turnout to inspect it.\n\n"
