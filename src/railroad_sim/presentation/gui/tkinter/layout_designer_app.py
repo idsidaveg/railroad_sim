@@ -9,7 +9,7 @@ import math
 import time
 import tkinter as tk
 from dataclasses import dataclass, field
-from tkinter import Misc, messagebox, ttk
+from tkinter import Misc, messagebox, simpledialog, ttk
 from typing import Optional
 from uuid import uuid4
 
@@ -253,6 +253,7 @@ class Tooltip:
 
 
 class LayoutDesignerApp:
+    DEBUG_SNAP = False
     GRID_SPACING = 20
     ZOOM_MIN = 0.35
     ZOOM_MAX = 3.0
@@ -338,6 +339,20 @@ class LayoutDesignerApp:
         self._snap_locked: tuple[str, str] | None = None
         self._snap_preview_point: tuple[float, float] | None = None
 
+        # ----------------------------------------------------------
+        # Group rotation state (Step 4.5 - state only)
+        # ----------------------------------------------------------
+        self._group_rotate_active: bool = False
+        self._group_rotate_pivot: tuple[float, float] | None = None
+
+        # Frozen geometry at rotation start
+        self._group_rotate_track_snapshot: dict[
+            str, tuple[float, float, float, float]
+        ] = {}
+        self._group_rotate_turnout_snapshot: dict[
+            str, tuple[float, float, float, float, float]
+        ] = {}
+
         debug_dir = Path(__file__).resolve().parent / "debug_output"
         debug_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -346,11 +361,13 @@ class LayoutDesignerApp:
         self._build_style()
         self._build_menu()
         self._build_ui()
+        self._build_canvas_context_menu()
+
         self._bind_keys()
         self._refresh_canvas()
 
         # temporary inspector smoke test
-        if False:
+        if self.DEBUG_SNAP:
             demo_turnout = TurnoutTrackElement(
                 name="Turnout 1",
                 hand="right",
@@ -441,6 +458,39 @@ class LayoutDesignerApp:
         menubar.add_cascade(label="Help", menu=help_menu)
 
         self.root.config(menu=menubar)
+
+    def _build_canvas_context_menu(self) -> None:
+        self.canvas_context_menu = tk.Menu(self.root, tearoff=0)
+
+        # ----------------------------------------------------------
+        # Rotate submenu
+        # ----------------------------------------------------------
+        self.rotate_submenu = tk.Menu(self.canvas_context_menu, tearoff=0)
+
+        for deg in (15, 30, 45, 90, 180, 270):
+            self.rotate_submenu.add_command(
+                label=f"Rotate +{deg}°",
+                command=lambda d=deg: self._on_rotate_command(d),
+            )
+
+        self.rotate_submenu.add_separator()
+
+        self.rotate_submenu.add_command(
+            label="Specify degree...",
+            command=self._on_rotate_specify,
+        )
+
+        self.canvas_context_menu.add_cascade(
+            label="Rotate",
+            menu=self.rotate_submenu,
+        )
+
+        self.canvas_context_menu.add_separator()
+
+        self.canvas_context_menu.add_command(
+            label="Validate",
+            command=self._validate_layout,
+        )
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=6)
@@ -538,6 +588,7 @@ class LayoutDesignerApp:
         self.canvas.bind("<Motion>", self._on_canvas_motion)
         self.canvas.bind("<Leave>", self._on_canvas_leave)
         self.canvas.bind("<MouseWheel>", self._on_mousewheel_zoom)
+        self.canvas.bind("<Button-3>", self._on_canvas_right_click)
 
     def _build_inspector(self, parent: ttk.Frame) -> None:
         panel = ttk.LabelFrame(parent, text="Inspector", padding=10)
@@ -836,6 +887,228 @@ class LayoutDesignerApp:
         self._refresh_canvas()
         self._set_status(f"Updated straight length to {turnout.straight_len:.1f} ft.")
 
+    def _on_rotate_command(self, degrees: float) -> None:
+        total_selected = len(self.selected_track_ids) + len(self.selected_turnout_ids)
+        if total_selected > 1:
+            self._begin_group_rotation_state()
+
+            if self._group_rotate_pivot is None:
+                self._set_status("Group rotation aborted: no valid pivot.")
+                return
+
+            pivot_x, pivot_y = self._group_rotate_pivot
+            angle_rad = math.radians(-degrees)
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+
+            # ------------------------------------------------------
+            # Rotate selected tracks from frozen snapshot geometry
+            # ------------------------------------------------------
+            for track_id, (x1, y1, x2, y2) in self._group_rotate_track_snapshot.items():
+                track = self.tracks.get(track_id)
+                if track is None:
+                    continue
+
+                dx1 = x1 - pivot_x
+                dy1 = y1 - pivot_y
+                new_x1 = pivot_x + (dx1 * cos_a) - (dy1 * sin_a)
+                new_y1 = pivot_y + (dx1 * sin_a) + (dy1 * cos_a)
+
+                dx2 = x2 - pivot_x
+                dy2 = y2 - pivot_y
+                new_x2 = pivot_x + (dx2 * cos_a) - (dy2 * sin_a)
+                new_y2 = pivot_y + (dx2 * sin_a) + (dy2 * cos_a)
+
+                track.x1 = new_x1
+                track.y1 = new_y1
+                track.x2 = new_x2
+                track.y2 = new_y2
+                track.sync_endpoints_from_geometry()
+                track.sync_length_from_geometry()
+
+            # ------------------------------------------------------
+            # Turnouts intentionally untouched in this step
+            # ------------------------------------------------------
+            # ------------------------------------------------------
+            # Rotate selected turnouts from frozen snapshot geometry
+            # ------------------------------------------------------
+            for turnout_id, (
+                x,
+                y,
+                angle_deg,
+                trunk_x,
+                trunk_y,
+            ) in self._group_rotate_turnout_snapshot.items():
+                turnout = self.turnouts.get(turnout_id)
+                if turnout is None:
+                    continue
+
+                # ------------------------------------------------------
+                # Rotate trunk endpoint around group pivot
+                # ------------------------------------------------------
+                dx = trunk_x - pivot_x
+                dy = trunk_y - pivot_y
+
+                new_trunk_x = pivot_x + (dx * cos_a) - (dy * sin_a)
+                new_trunk_y = pivot_y + (dx * sin_a) + (dy * cos_a)
+
+                # ------------------------------------------------------
+                # Rotate turnout orientation (match track direction)
+                # ------------------------------------------------------
+                turnout.angle_deg = angle_deg - degrees
+                turnout.angle_deg = (turnout.angle_deg + 180.0) % 360.0 - 180.0
+
+                turnout.recalculate_geometry_from_parameters()
+
+                # ------------------------------------------------------
+                # Move turnout so trunk lands exactly on rotated trunk
+                # ------------------------------------------------------
+                trunk = turnout.endpoints()["trunk"]
+
+                shift_x = new_trunk_x - trunk.x
+                shift_y = new_trunk_y - trunk.y
+
+                turnout.x += shift_x
+                turnout.y += shift_y
+
+                turnout.recalculate_geometry_from_parameters()
+
+            self._sync_primary_selection_from_group()
+            self._refresh_canvas()
+            self._set_status(
+                f"Rotating selected group by +{degrees}° "
+                f"around pivot ({pivot_x:1f}, {pivot_y:1f})."
+            )
+            return
+
+        if self.selected_track_id is not None:
+            track = self.tracks[self.selected_track_id]
+
+            # Clear any existing connections before rotation.
+            self._clear_track_connections(track)
+
+            # Current geometry endpoints.
+            x1 = track.x1
+            y1 = track.y1
+            x2 = track.x2
+            y2 = track.y2
+
+            # Midpoint pivot.
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+
+            # Negative angle so visual rotation feels correct in Tk canvas coords.
+            angle_rad = math.radians(-degrees)
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+
+            # Rotate endpoint A about midpoint.
+            dx1 = x1 - cx
+            dy1 = y1 - cy
+            new_x1 = cx + (dx1 * cos_a) - (dy1 * sin_a)
+            new_y1 = cy + (dx1 * sin_a) + (dy1 * cos_a)
+
+            # Rotate endpoint B about midpoint.
+            dx2 = x2 - cx
+            dy2 = y2 - cy
+            new_x2 = cx + (dx2 * cos_a) - (dy2 * sin_a)
+            new_y2 = cy + (dx2 * sin_a) + (dy2 * cos_a)
+
+            # Update the real track geometry used by drawing / hit test / inspector.
+            track.x1 = new_x1
+            track.y1 = new_y1
+            track.x2 = new_x2
+            track.y2 = new_y2
+
+            # Keep endpoint objects and derived length in sync.
+            track.sync_endpoints_from_geometry()
+            track.sync_length_from_geometry()
+
+            self._update_inspector(track)
+            self._refresh_canvas()
+            self._set_status(f"Rotated {track.name} by +{degrees}°")
+            return
+
+        if self.selected_turnout_id is not None:
+            turnout = self.turnouts[self.selected_turnout_id]
+
+            # ----------------------------------------------------------
+            # Clear existing turnout connections before rotation
+            # ----------------------------------------------------------
+            for endpoint_name, endpoint in turnout.endpoints().items():
+                if endpoint.connected_to_track_id is None:
+                    continue
+
+                other_id = endpoint.connected_to_track_id
+                other_endpoint_name = endpoint.connected_to_endpoint_name
+
+                endpoint.connected_to_track_id = None
+                endpoint.connected_to_endpoint_name = None
+
+                if other_id is not None and other_endpoint_name is not None:
+                    other_track = self.tracks.get(other_id)
+                    if other_track is not None:
+                        other_ep = other_track.endpoint(other_endpoint_name)
+                        if other_ep.connected_to_track_id == turnout.track_id:
+                            other_ep.connected_to_track_id = None
+                            other_ep.connected_to_endpoint_name = None
+
+                    other_turnout = self.turnouts.get(other_id)
+                    if other_turnout is not None:
+                        other_ep = other_turnout.endpoints()[other_endpoint_name]
+                        if other_ep.connected_to_track_id == turnout.track_id:
+                            other_ep.connected_to_track_id = None
+                            other_ep.connected_to_endpoint_name = None
+
+            # ----------------------------------------------------------
+            # Preserve the visual center during menu rotation
+            # ----------------------------------------------------------
+            old_center_x, old_center_y = self._turnout_center_world(turnout)
+
+            turnout.angle_deg += degrees
+            turnout.angle_deg = (turnout.angle_deg + 180.0) % 360.0 - 180.0
+            turnout.recalculate_geometry_from_parameters()
+
+            new_center_x, new_center_y = self._turnout_center_world(turnout)
+
+            turnout.x += old_center_x - new_center_x
+            turnout.y += old_center_y - new_center_y
+            turnout.recalculate_geometry_from_parameters()
+
+            self._update_turnout_inspector(turnout)
+            self._refresh_canvas()
+            self._set_status(f"Rotated {turnout.name} by +{degrees}°")
+            return
+
+    def _on_rotate_specify(self) -> None:
+        if self.selected_track_id is None and self.selected_turnout_id is None:
+            self._set_status("No object selected for rotation.")
+            return
+
+        obj_name = None
+        if self.selected_track_id is not None:
+            obj_name = self.tracks[self.selected_track_id].name
+        elif self.selected_turnout_id is not None:
+            obj_name = self.turnouts[self.selected_turnout_id].name
+
+        degrees = simpledialog.askfloat(
+            "Specify Rotation",
+            f"Rotate {obj_name} by degrees:",
+            parent=self.root,
+            minvalue=-360.0,
+            maxvalue=360.0,
+        )
+
+        if degrees is None:
+            self._set_status("Rotation canceled.")
+            return
+
+        if abs(degrees) < 1e-9:
+            self._set_status("Rotation skipped (0°).")
+            return
+
+        self._on_rotate_command(degrees)
+
     def _on_name_entry_return(self, event: tk.Event) -> None:
         self._apply_track_name()
         self.canvas.focus_set()
@@ -969,7 +1242,8 @@ class LayoutDesignerApp:
         render_sx2 = sx2
         render_sy2 = sy2
 
-        trim_px = 0.5 * self.zoom_scale
+        # trim_px = 0.5 * self.zoom_scale
+        trim_px = 0.0
 
         if track.endpoint_a.connected_to_track_id is not None:
             render_sx1 += ux * trim_px
@@ -1023,37 +1297,27 @@ class LayoutDesignerApp:
         # --------------------------------------------------------------
         # Slight taper at connected endpoints to reduce visual collision
         # --------------------------------------------------------------
-        taper_factor = 0.75
+        taper_factor = 1.0
 
         if track.endpoint_a.connected_to_track_id is not None:
-            left_x1 = (left_x1 + right_x1) / 2 + (
-                left_x1 - right_x1
-            ) * 0.5 * taper_factor
-            left_y1 = (left_y1 + right_y1) / 2 + (
-                left_y1 - right_y1
-            ) * 0.5 * taper_factor
-
-            right_x1 = (left_x1 + right_x1) / 2 - (
-                left_x1 - right_x1
-            ) * 0.5 * taper_factor
-            right_y1 = (left_y1 + right_y1) / 2 - (
-                left_y1 - right_y1
-            ) * 0.5 * taper_factor
+            mid_x1 = (left_x1 + right_x1) / 2.0
+            mid_y1 = (left_y1 + right_y1) / 2.0
+            half_dx1 = (left_x1 - right_x1) * 0.5 * taper_factor
+            half_dy1 = (left_y1 - right_y1) * 0.5 * taper_factor
+            left_x1 = mid_x1 + half_dx1
+            left_y1 = mid_y1 + half_dy1
+            right_x1 = mid_x1 - half_dx1
+            right_y1 = mid_y1 - half_dy1
 
         if track.endpoint_b.connected_to_track_id is not None:
-            left_x2 = (left_x2 + right_x2) / 2 + (
-                left_x2 - right_x2
-            ) * 0.5 * taper_factor
-            left_y2 = (left_y2 + right_y2) / 2 + (
-                left_y2 - right_y2
-            ) * 0.5 * taper_factor
-
-            right_x2 = (left_x2 + right_x2) / 2 - (
-                left_x2 - right_x2
-            ) * 0.5 * taper_factor
-            right_y2 = (left_y2 + right_y2) / 2 - (
-                left_y2 - right_y2
-            ) * 0.5 * taper_factor
+            mid_x2 = (left_x2 + right_x2) / 2.0
+            mid_y2 = (left_y2 + right_y2) / 2.0
+            half_dx2 = (left_x2 - right_x2) * 0.5 * taper_factor
+            half_dy2 = (left_y2 - right_y2) * 0.5 * taper_factor
+            left_x2 = mid_x2 + half_dx2
+            left_y2 = mid_y2 + half_dy2
+            right_x2 = mid_x2 - half_dx2
+            right_y2 = mid_y2 - half_dy2
 
         # --------------------------------------------------------------
         # Choose fill and rail color based on Track Type
@@ -1798,6 +2062,133 @@ class LayoutDesignerApp:
         self._set_status(f"Group selection now contains {total} object(s).")
         self._refresh_canvas()
 
+    def _selected_group_world_bbox(self) -> tuple[float, float, float, float] | None:
+        xs: list[float] = []
+        ys: list[float] = []
+
+        for track_id in self.selected_track_ids:
+            track = self.tracks.get(track_id)
+            if track is None:
+                continue
+            xs.extend([track.x1, track.x2])
+            ys.extend([track.y1, track.y2])
+
+        for turnout_id in self.selected_turnout_ids:
+            turnout = self.turnouts.get(turnout_id)
+            if turnout is None:
+                continue
+            xs.extend(
+                [
+                    turnout.trunk.x,
+                    turnout.split_x,
+                    turnout.straight.x,
+                    turnout.diverging.x,
+                ]
+            )
+            ys.extend(
+                [
+                    turnout.trunk.y,
+                    turnout.split_y,
+                    turnout.straight.y,
+                    turnout.diverging.y,
+                ]
+            )
+
+        if not xs or not ys:
+            return None
+
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def _selected_group_rotation_pivot(self) -> tuple[float, float] | None:
+        bbox = self._selected_group_world_bbox()
+        if bbox is None:
+            return None
+
+        min_x, min_y, max_x, max_y = bbox
+        return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
+    def _capture_group_rotation_snapshot(self) -> None:
+        self._group_rotate_track_snapshot.clear()
+        self._group_rotate_turnout_snapshot.clear()
+
+        for track_id in self.selected_track_ids:
+            track = self.tracks.get(track_id)
+            if track is None:
+                continue
+
+            self._group_rotate_track_snapshot[track_id] = (
+                track.x1,
+                track.y1,
+                track.x2,
+                track.y2,
+            )
+
+        for turnout_id in self.selected_turnout_ids:
+            turnout = self.turnouts.get(turnout_id)
+            if turnout is None:
+                continue
+
+            trunk = turnout.endpoints()["trunk"]
+            self._group_rotate_turnout_snapshot[turnout_id] = (
+                turnout.x,
+                turnout.y,
+                turnout.angle_deg,
+                trunk.x,
+                trunk.y,
+            )
+
+    def _begin_group_rotation_state(self) -> None:
+        self._group_rotate_active = False
+        self._group_rotate_pivot = self._selected_group_rotation_pivot()
+
+        # Preserve internal selected↔selected connections,
+        # sever only selected↔unselected connections.
+        self._clear_group_rotation_external_connections()
+
+        self._capture_group_rotation_snapshot()
+
+    def _clear_group_rotation_external_connections(self) -> None:
+        selected_ids = set(self.selected_track_ids) | set(self.selected_turnout_ids)
+
+        if not selected_ids:
+            return
+
+        # ----------------------------------------------------------
+        # Tracks: clear only endpoints connected outside the group
+        # ----------------------------------------------------------
+        for track_id in list(self.selected_track_ids):
+            track = self.tracks.get(track_id)
+            if track is None:
+                continue
+
+            for endpoint_name in ("A", "B"):
+                endpoint = track.endpoint(endpoint_name)
+                other_id = endpoint.connected_to_track_id
+
+                if other_id is None:
+                    continue
+
+                if other_id not in selected_ids:
+                    self._clear_endpoint_connection(track, endpoint_name)
+
+        # ----------------------------------------------------------
+        # Turnouts: clear only endpoints connected outside the group
+        # ----------------------------------------------------------
+        for turnout_id in list(self.selected_turnout_ids):
+            turnout = self.turnouts.get(turnout_id)
+            if turnout is None:
+                continue
+
+            for endpoint_name in ("trunk", "straight", "diverging"):
+                endpoint = turnout.endpoints()[endpoint_name]
+                other_id = endpoint.connected_to_track_id
+
+                if other_id is None:
+                    continue
+
+                if other_id not in selected_ids:
+                    self._clear_turnout_endpoint_connection(turnout, endpoint_name)
+
     def _draw_topology_endpoint_overlay(
         self, track: StraightTrackElement, endpoint_name: str
     ) -> None:
@@ -2014,6 +2405,91 @@ class LayoutDesignerApp:
             self._update_turnout_inspector(turnout)
             self._refresh_canvas()
             return
+
+    def _on_canvas_right_click(self, event: tk.Event) -> None:
+        print("RIGHT CLICK DETECTED")
+
+        world_x, world_y = self._event_world(event)
+        hit = self._hit_test(world_x, world_y)
+
+        print("HIT:", hit)
+
+        total_selected = len(self.selected_track_ids) + len(self.selected_turnout_ids)
+
+        # ----------------------------------------------------------
+        # If a multi-selection already exists and the right-click is
+        # on one of its members, keep the group selection intact and
+        # show the group menu.
+        # ----------------------------------------------------------
+        if (
+            total_selected > 1
+            and hit is not None
+            and self._hit_is_in_selected_group(hit)
+        ):
+            label = "Rotate Group"
+            self.canvas_context_menu.entryconfig(0, label=label)
+
+            try:
+                self.canvas_context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.canvas_context_menu.grab_release()
+            return
+
+        if hit is None:
+            return
+
+        # ----------------------------------------------------------
+        # Force selection to the object under cursor
+        # ----------------------------------------------------------
+        if hit["type"] == "track":
+            track_id = hit["track_id"]
+
+            self.selected_track_id = track_id
+            self.selected_turnout_id = None
+
+            self.selected_track_ids = {track_id}
+            self.selected_turnout_ids.clear()
+
+            self._update_inspector(self.tracks[track_id])
+
+        elif hit["type"] == "turnout":
+            turnout_id = hit["turnout_id"]
+
+            self.selected_turnout_id = turnout_id
+            self.selected_track_id = None
+
+            self.selected_turnout_ids = {turnout_id}
+            self.selected_track_ids.clear()
+
+            self._update_turnout_inspector(self.turnouts[turnout_id])
+
+        # Refresh visuals to reflect new selection
+        self._refresh_canvas()
+
+        total_selected = len(self.selected_track_ids) + len(self.selected_turnout_ids)
+        if total_selected == 0:
+            return
+
+        # ----------------------------------------------------------
+        # Update Rotate menu label dynamically
+        # ----------------------------------------------------------
+        if total_selected > 1:
+            label = "Rotate Group"
+        elif self.selected_track_id:
+            obj = self.tracks[self.selected_track_id]
+            label = f"Rotate {obj.name}"
+        elif self.selected_turnout_id:
+            obj = self.turnouts[self.selected_turnout_id]
+            label = f"Rotate {obj.name}"
+        else:
+            label = "Rotate"
+
+        self.canvas_context_menu.entryconfig(0, label=label)
+
+        try:
+            self.canvas_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.canvas_context_menu.grab_release()
 
     def _on_canvas_drag(self, event: tk.Event) -> None:
         world_x, world_y = self._event_world(event)
@@ -2471,13 +2947,11 @@ class LayoutDesignerApp:
         elif self._drag_track_id is not None and self._drag_mode == "move":
             track = self.tracks[self._drag_track_id]
 
-            if self.snap_to_grid.get():
-                snapped_x1, snapped_y1 = self._apply_grid_snap(track.x1, track.y1)
-                dx = snapped_x1 - track.x1
-                dy = snapped_y1 - track.y1
-                track.move_by(dx, dy)
-                self._clamp_track_to_canvas(track)
-
+            # ----------------------------------------------------------
+            # IMPORTANT:
+            # Try endpoint snap first. Only fall back to grid snap if
+            # no endpoint snap target is available.
+            # ----------------------------------------------------------
             best_snap = self._find_best_snap_for_moved_track(track)
             if best_snap is not None:
                 active_endpoint_name = best_snap[0]
@@ -2488,6 +2962,13 @@ class LayoutDesignerApp:
                     active_y=track.endpoint(active_endpoint_name).y,
                 )
                 self._commit_snap_if_locked(track.track_id, active_endpoint_name)
+
+            elif self.snap_to_grid.get():
+                snapped_x1, snapped_y1 = self._apply_grid_snap(track.x1, track.y1)
+                dx = snapped_x1 - track.x1
+                dy = snapped_y1 - track.y1
+                track.move_by(dx, dy)
+                self._clamp_track_to_canvas(track)
 
             self._update_inspector(track)
             self._set_status(f"Moved {track.name}.")
@@ -3077,10 +3558,36 @@ class LayoutDesignerApp:
             return
 
         active_track = self.tracks[active_track_id]
-        x, y = self._snap_preview_point
+        snap_x, snap_y = self._snap_preview_point
 
+        target_track = self.tracks.get(target_track_id)
         target_turnout = self.turnouts.get(target_track_id)
-        if target_turnout is not None:
+
+        # ----------------------------------------------------------
+        # Apply snap geometry
+        # ----------------------------------------------------------
+        if target_track is not None:
+            # Preserve the moving track's current angle and length.
+            # Just translate the whole track so the active endpoint lands
+            # exactly on the snap point.
+            active_endpoint = active_track.endpoint(active_endpoint_name)
+            dx = snap_x - active_endpoint.x
+            dy = snap_y - active_endpoint.y
+            active_track.move_by(dx, dy)
+
+            if self.DEBUG_SNAP:
+                # ------------------------------------------------------
+                # Debug: verify both endpoints after the move
+                # ------------------------------------------------------
+                ep_a = active_track.endpoint("A")
+                ep_b = active_track.endpoint("B")
+
+                print("AFTER MOVE:")
+                print(f"A: ({ep_a.x:.2f}, {ep_a.y:.2f})")
+                print(f"B: ({ep_b.x:.2f}, {ep_b.y:.2f})")
+
+        elif target_turnout is not None:
+            # Keep tangent alignment behavior for turnout targets for now.
             target_heading_deg = self._turnout_endpoint_heading_deg(
                 target_turnout,
                 target_endpoint_name,
@@ -3089,27 +3596,33 @@ class LayoutDesignerApp:
                 track=active_track,
                 active_endpoint_name=active_endpoint_name,
                 target_heading_deg=target_heading_deg,
-                snap_x=x,
-                snap_y=y,
+                snap_x=snap_x,
+                snap_y=snap_y,
             )
         else:
-            active_track.set_endpoint(active_endpoint_name, x, y)
+            return
 
+        # ----------------------------------------------------------
+        # Clear old connection on active endpoint
+        # ----------------------------------------------------------
         self._clear_endpoint_connection(active_track, active_endpoint_name)
 
-        target_track = self.tracks.get(target_track_id)
+        # ----------------------------------------------------------
+        # Clear old connection on target endpoint
+        # ----------------------------------------------------------
         if target_track is not None:
             target_endpoint = target_track.endpoint(target_endpoint_name)
             self._clear_endpoint_connection(target_track, target_endpoint_name)
-
         else:
-            target_turnout = self.turnouts.get(target_track_id)
             if target_turnout is None:
                 return
             target_endpoint = target_turnout.endpoints()[target_endpoint_name]
             target_endpoint.connected_to_track_id = None
             target_endpoint.connected_to_endpoint_name = None
 
+        # ----------------------------------------------------------
+        # Connect both sides
+        # ----------------------------------------------------------
         active_endpoint = active_track.endpoint(active_endpoint_name)
 
         active_endpoint.connected_to_track_id = target_track_id
@@ -3560,6 +4073,10 @@ class LayoutDesignerApp:
 
         # ----------------------------------------------------------
         # Track endpoints as snap targets
+        #
+        # For track-to-track snapping, allow the cue based on proximity.
+        # Final alignment is handled during commit by
+        # _align_track_endpoint_to_target_tangent().
         # ----------------------------------------------------------
         for track in self.tracks.values():
             if track.track_id == active_track_id:
@@ -3569,10 +4086,6 @@ class LayoutDesignerApp:
                 endpoint = track.endpoint(endpoint_name)
                 distance = math.hypot(endpoint.x - active_x, endpoint.y - active_y)
                 if distance > self.SNAP_PREVIEW_RADIUS_PX / max(self.zoom_scale, 0.001):
-                    continue
-
-                candidate_heading = self._endpoint_heading_deg(track, endpoint_name)
-                if not self._headings_are_compatible(active_heading, candidate_heading):
                     continue
 
                 if distance < best_distance:
@@ -3587,6 +4100,8 @@ class LayoutDesignerApp:
 
         # ----------------------------------------------------------
         # Turnout endpoints as snap targets
+        #
+        # Keep existing heading compatibility behavior for now.
         # ----------------------------------------------------------
         for turnout in self.turnouts.values():
             turnout_targets = {
