@@ -4,8 +4,9 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
-from railroad_sim.presentation.gui.tkinter.canvas.elements.straight_track import (
+from railroad_sim.presentation.gui.tkinter.canvas.elements import (
     StraightTrackElement,
+    TurnoutElement,
 )
 from railroad_sim.presentation.gui.tkinter.canvas.rulers.guide_model import GuideModel
 from railroad_sim.presentation.gui.tkinter.canvas.rulers.ruler_widgets import (
@@ -14,7 +15,6 @@ from railroad_sim.presentation.gui.tkinter.canvas.rulers.ruler_widgets import (
 )
 from railroad_sim.presentation.gui.tkinter.canvas.snap_helpers import (
     SnapCandidate,
-    find_nearest_endpoint,
 )
 
 
@@ -92,9 +92,15 @@ class DesignCanvas(ttk.Frame):
         self._creating_track = False
         self._temp_track: StraightTrackElement | None = None
         self._tracks: list[StraightTrackElement] = []
+        self._turnouts: list[TurnoutElement] = []
         self._selected_track_id: str | None = None
+        self._selected_turnout_id: str | None = None
         self._active_track_drag_id: str | None = None
+        self._active_turnout_drag_id: str | None = None
         self._active_endpoint_drag: int | None = None  # 1 or 2
+        self._active_turnout_endpoint_drag: str | None = (
+            None  # "trunk", "straight", or "diverging"
+        )
         self._drag_start_world_x: float | None = None
         self._drag_start_world_y: float | None = None
 
@@ -108,6 +114,7 @@ class DesignCanvas(ttk.Frame):
         self._endpoint_snap_candidate = None
         self._endpoint_snap_flash = None
         self._body_drag_snap_endpoint_index: int | None = None
+        self._turnout_body_drag_snap_endpoint_name: str | None = None
 
         self._build_ui()
         self._configure_canvas()
@@ -258,6 +265,10 @@ class DesignCanvas(ttk.Frame):
     def set_show_grid(self, value: bool) -> None:
         self._show_grid = value
         self.redraw()
+
+    def set_trackwork_element(self, value: str) -> None:
+        self._current_trackwork_element = value
+        self._set_status_message(f"Trackwork element set to {value}.")
 
     def set_show_snap(self, value: bool) -> None:
         self._show_snap = value
@@ -703,6 +714,82 @@ class DesignCanvas(ttk.Frame):
 
         return None
 
+    def _find_turnout_at_point(
+        self,
+        world_x: float,
+        world_y: float,
+    ) -> TurnoutElement | None:
+        import math
+
+        hit_tolerance = 6.0
+
+        for turnout in reversed(self._turnouts):
+            x = turnout.x
+            y = turnout.y
+
+            base_angle_rad = math.radians(turnout.angle_degrees)
+            diverge_delta_rad = math.radians(turnout.diverge_angle_degrees)
+
+            if turnout.is_left_hand:
+                diverge_angle_rad = base_angle_rad - diverge_delta_rad
+            else:
+                diverge_angle_rad = base_angle_rad + diverge_delta_rad
+
+            trunk_length = turnout.length * 0.35
+
+            trunk_end_x = x + (trunk_length * math.cos(base_angle_rad))
+            trunk_end_y = y + (trunk_length * math.sin(base_angle_rad))
+
+            straight_remaining = turnout.length - trunk_length
+            straight_end_x = trunk_end_x + (
+                straight_remaining * math.cos(base_angle_rad)
+            )
+            straight_end_y = trunk_end_y + (
+                straight_remaining * math.sin(base_angle_rad)
+            )
+
+            diverge_end_x = trunk_end_x + (
+                turnout.diverge_length * math.cos(diverge_angle_rad)
+            )
+            diverge_end_y = trunk_end_y + (
+                turnout.diverge_length * math.sin(diverge_angle_rad)
+            )
+
+            if self._point_near_segment(
+                px=world_x,
+                py=world_y,
+                x1=x,
+                y1=y,
+                x2=trunk_end_x,
+                y2=trunk_end_y,
+                tolerance=hit_tolerance,
+            ):
+                return turnout
+
+            if self._point_near_segment(
+                px=world_x,
+                py=world_y,
+                x1=trunk_end_x,
+                y1=trunk_end_y,
+                x2=straight_end_x,
+                y2=straight_end_y,
+                tolerance=hit_tolerance,
+            ):
+                return turnout
+
+            if self._point_near_segment(
+                px=world_x,
+                py=world_y,
+                x1=trunk_end_x,
+                y1=trunk_end_y,
+                x2=diverge_end_x,
+                y2=diverge_end_y,
+                tolerance=hit_tolerance,
+            ):
+                return turnout
+
+        return None
+
     def _point_near_segment(
         self,
         *,
@@ -740,12 +827,274 @@ class DesignCanvas(ttk.Frame):
             None,
         )
 
+    def _get_selected_turnout(self) -> TurnoutElement | None:
+        if self._selected_turnout_id is None:
+            return None
+
+        return next(
+            (
+                turnout
+                for turnout in self._turnouts
+                if turnout.id == self._selected_turnout_id
+            ),
+            None,
+        )
+
+    def _get_turnout_endpoint_positions(
+        self,
+        turnout: TurnoutElement,
+    ) -> dict[str, tuple[float, float]]:
+        import math
+
+        x = turnout.x
+        y = turnout.y
+
+        base_angle_rad = math.radians(turnout.angle_degrees)
+        diverge_delta_rad = math.radians(turnout.diverge_angle_degrees)
+
+        if turnout.is_left_hand:
+            diverge_angle_rad = base_angle_rad - diverge_delta_rad
+        else:
+            diverge_angle_rad = base_angle_rad + diverge_delta_rad
+
+        trunk_length = turnout.length * 0.35
+
+        trunk_end_x = x + (trunk_length * math.cos(base_angle_rad))
+        trunk_end_y = y + (trunk_length * math.sin(base_angle_rad))
+
+        straight_remaining = turnout.length - trunk_length
+        straight_end_x = trunk_end_x + (straight_remaining * math.cos(base_angle_rad))
+        straight_end_y = trunk_end_y + (straight_remaining * math.sin(base_angle_rad))
+
+        diverge_end_x = trunk_end_x + (
+            turnout.diverge_length * math.cos(diverge_angle_rad)
+        )
+        diverge_end_y = trunk_end_y + (
+            turnout.diverge_length * math.sin(diverge_angle_rad)
+        )
+
+        return {
+            "trunk": (x, y),
+            "straight": (straight_end_x, straight_end_y),
+            "diverging": (diverge_end_x, diverge_end_y),
+        }
+
+    def _find_nearest_canvas_endpoint(
+        self,
+        world_x: float,
+        world_y: float,
+        *,
+        ignore_track: StraightTrackElement | None = None,
+        ignore_turnout: TurnoutElement | None = None,
+        ignore_turnout_endpoint_name: str | None = None,
+    ) -> SnapCandidate | None:
+        import math
+
+        best_candidate: SnapCandidate | None = None
+        best_distance = 12.0
+
+        # straight-track endpoints
+        for track in self._tracks:
+            if ignore_track is not None and track is ignore_track:
+                continue
+
+            for endpoint_index, (endpoint_x, endpoint_y) in enumerate(
+                (
+                    (track.x1, track.y1),
+                    (track.x2, track.y2),
+                ),
+                start=1,
+            ):
+                distance = math.hypot(world_x - endpoint_x, world_y - endpoint_y)
+                if distance <= best_distance:
+                    is_valid = not self._canvas_endpoint_is_occupied(
+                        endpoint_x,
+                        endpoint_y,
+                        target_track=track,
+                        target_track_endpoint_index=endpoint_index,
+                        ignore_track=ignore_track,
+                        ignore_turnout=ignore_turnout,
+                        ignore_turnout_endpoint_name=ignore_turnout_endpoint_name,
+                    )
+                    best_distance = distance
+                    best_candidate = SnapCandidate(
+                        x=endpoint_x,
+                        y=endpoint_y,
+                        is_valid=is_valid,
+                        endpoint=None,  # type: ignore[arg-type]
+                    )
+
+        # turnout endpoints
+        for turnout in self._turnouts:
+            if ignore_turnout is not None and turnout is ignore_turnout:
+                continue
+
+            endpoints = self._get_turnout_endpoint_positions(turnout)
+            for endpoint_name in ("trunk", "straight", "diverging"):
+                if (
+                    ignore_turnout is turnout
+                    and ignore_turnout_endpoint_name == endpoint_name
+                ):
+                    continue
+
+                endpoint_x, endpoint_y = endpoints[endpoint_name]
+                distance = math.hypot(world_x - endpoint_x, world_y - endpoint_y)
+                if distance <= best_distance:
+                    is_valid = not self._canvas_endpoint_is_occupied(
+                        endpoint_x,
+                        endpoint_y,
+                        target_turnout=turnout,
+                        target_turnout_endpoint_name=endpoint_name,
+                        ignore_track=ignore_track,
+                        ignore_turnout=ignore_turnout,
+                        ignore_turnout_endpoint_name=ignore_turnout_endpoint_name,
+                    )
+                    best_distance = distance
+                    best_candidate = SnapCandidate(
+                        x=endpoint_x,
+                        y=endpoint_y,
+                        is_valid=is_valid,
+                        endpoint=None,  # type: ignore[arg-type]
+                    )
+
+        return best_candidate
+
+    def _canvas_endpoint_is_occupied(
+        self,
+        endpoint_x: float,
+        endpoint_y: float,
+        *,
+        target_track: StraightTrackElement | None = None,
+        target_track_endpoint_index: int | None = None,
+        target_turnout: TurnoutElement | None = None,
+        target_turnout_endpoint_name: str | None = None,
+        ignore_track: StraightTrackElement | None = None,
+        ignore_turnout: TurnoutElement | None = None,
+        ignore_turnout_endpoint_name: str | None = None,
+    ) -> bool:
+        tolerance = 1.0
+
+        # check straight-track endpoints
+        for track in self._tracks:
+            if ignore_track is not None and track is ignore_track:
+                continue
+
+            for endpoint_index, (other_x, other_y) in enumerate(
+                (
+                    (track.x1, track.y1),
+                    (track.x2, track.y2),
+                ),
+                start=1,
+            ):
+                if (
+                    target_track is track
+                    and target_track_endpoint_index == endpoint_index
+                ):
+                    continue
+
+                dx = endpoint_x - other_x
+                dy = endpoint_y - other_y
+                if (dx * dx + dy * dy) <= (tolerance * tolerance):
+                    return True
+
+        # check turnout endpoints
+        for turnout in self._turnouts:
+            if ignore_turnout is not None and turnout is ignore_turnout:
+                continue
+
+            endpoints = self._get_turnout_endpoint_positions(turnout)
+            for endpoint_name in ("trunk", "straight", "diverging"):
+                if (
+                    target_turnout is turnout
+                    and target_turnout_endpoint_name == endpoint_name
+                ):
+                    continue
+
+                if (
+                    ignore_turnout is turnout
+                    and ignore_turnout_endpoint_name == endpoint_name
+                ):
+                    continue
+
+                other_x, other_y = endpoints[endpoint_name]
+                dx = endpoint_x - other_x
+                dy = endpoint_y - other_y
+                if (dx * dx + dy * dy) <= (tolerance * tolerance):
+                    return True
+
+        return False
+
+    def _find_selected_turnout_endpoint_at_point(
+        self,
+        world_x: float,
+        world_y: float,
+    ) -> str | None:
+        selected_turnout = self._get_selected_turnout()
+        if selected_turnout is None:
+            return None
+
+        hit_radius = 8.0
+        endpoints = self._get_turnout_endpoint_positions(selected_turnout)
+
+        for endpoint_name in ("trunk", "straight", "diverging"):
+            endpoint_x, endpoint_y = endpoints[endpoint_name]
+            if self._point_within_radius(
+                px=world_x,
+                py=world_y,
+                cx=endpoint_x,
+                cy=endpoint_y,
+                radius=hit_radius,
+            ):
+                return endpoint_name
+
+        return None
+
+    def _endpoint_is_coincident(
+        self,
+        track: StraightTrackElement,
+        endpoint_index: int,
+    ) -> bool:
+        if endpoint_index == 1:
+            x, y = track.x1, track.y1
+        else:
+            x, y = track.x2, track.y2
+
+        tolerance = 1.0
+
+        for other in self._tracks:
+            if other is track:
+                continue
+
+            for ox, oy in (
+                (other.x1, other.y1),
+                (other.x2, other.y2),
+            ):
+                dx = x - ox
+                dy = y - oy
+                if (dx * dx + dy * dy) <= (tolerance * tolerance):
+                    return True
+
+        return False
+
     def _get_active_drag_track(self) -> StraightTrackElement | None:
         if self._active_track_drag_id is None:
             return None
 
         return next(
             (track for track in self._tracks if track.id == self._active_track_drag_id),
+            None,
+        )
+
+    def _get_active_drag_turnout(self) -> TurnoutElement | None:
+        if self._active_turnout_drag_id is None:
+            return None
+
+        return next(
+            (
+                turnout
+                for turnout in self._turnouts
+                if turnout.id == self._active_turnout_drag_id
+            ),
             None,
         )
 
@@ -773,6 +1122,89 @@ class DesignCanvas(ttk.Frame):
     ) -> None:
         track.move(dx, dy)
 
+    def _move_turnout_body(
+        self,
+        turnout: TurnoutElement,
+        dx: float,
+        dy: float,
+    ) -> None:
+        turnout.move(dx, dy)
+
+    def _move_turnout_endpoint(
+        self,
+        turnout: TurnoutElement,
+        endpoint_name: str,
+        world_x: float,
+        world_y: float,
+    ) -> None:
+        import math
+
+        # trunk endpoint drag = move the whole turnout while keeping the
+        # trunk endpoint directly under the mouse
+        if endpoint_name == "trunk":
+            turnout.x = world_x
+            turnout.y = world_y
+            return
+
+        trunk_x = turnout.x
+        trunk_y = turnout.y
+
+        base_angle_rad = math.radians(turnout.angle_degrees)
+        trunk_length = turnout.length * 0.35
+
+        split_x = trunk_x + (trunk_length * math.cos(base_angle_rad))
+        split_y = trunk_y + (trunk_length * math.sin(base_angle_rad))
+
+        if endpoint_name == "straight":
+            dx = world_x - split_x
+            dy = world_y - split_y
+
+            straight_length = max(20.0, math.hypot(dx, dy))
+            new_base_angle_deg = math.degrees(math.atan2(dy, dx))
+
+            turnout.angle_degrees = new_base_angle_deg
+            turnout.length = trunk_length + straight_length
+            return
+
+        if endpoint_name == "diverging":
+            dx = world_x - split_x
+            dy = world_y - split_y
+
+            turnout.diverge_length = max(20.0, math.hypot(dx, dy))
+
+            diverge_angle_rad = math.atan2(dy, dx)
+            base_angle_rad = math.radians(turnout.angle_degrees)
+            delta_degrees = math.degrees(diverge_angle_rad - base_angle_rad)
+
+            turnout.diverge_angle_degrees = max(1.0, abs(delta_degrees))
+
+    def _move_turnout_endpoint_to_snap_candidate(
+        self,
+        turnout: TurnoutElement,
+        endpoint_name: str,
+        candidate: SnapCandidate,
+    ) -> None:
+        self._move_turnout_endpoint(
+            turnout,
+            endpoint_name,
+            candidate.x,
+            candidate.y,
+        )
+
+    def _commit_turnout_body_snap(
+        self,
+        turnout: TurnoutElement,
+        endpoint_name: str,
+        candidate: SnapCandidate,
+    ) -> None:
+        endpoints = self._get_turnout_endpoint_positions(turnout)
+        endpoint_x, endpoint_y = endpoints[endpoint_name]
+
+        dx = candidate.x - endpoint_x
+        dy = candidate.y - endpoint_y
+
+        turnout.move(dx, dy)
+
     def _mouse_world_position(self, event: tk.Event) -> tuple[float, float]:
         return (
             self.canvas.canvasx(event.x),
@@ -796,30 +1228,32 @@ class DesignCanvas(ttk.Frame):
         self,
         drag_track: StraightTrackElement,
     ) -> tuple[int, SnapCandidate] | None:
+        import math
+
         candidates: list[tuple[float, int, SnapCandidate]] = []
 
-        endpoint_1_candidate = find_nearest_endpoint(
+        endpoint_1_candidate = self._find_nearest_canvas_endpoint(
             drag_track.x1,
             drag_track.y1,
-            self._tracks,
             ignore_track=drag_track,
         )
         if endpoint_1_candidate is not None:
-            distance_1 = (drag_track.x1 - endpoint_1_candidate.x) ** 2 + (
-                drag_track.y1 - endpoint_1_candidate.y
-            ) ** 2
+            distance_1 = math.hypot(
+                drag_track.x1 - endpoint_1_candidate.x,
+                drag_track.y1 - endpoint_1_candidate.y,
+            )
             candidates.append((distance_1, 1, endpoint_1_candidate))
 
-        endpoint_2_candidate = find_nearest_endpoint(
+        endpoint_2_candidate = self._find_nearest_canvas_endpoint(
             drag_track.x2,
             drag_track.y2,
-            self._tracks,
             ignore_track=drag_track,
         )
         if endpoint_2_candidate is not None:
-            distance_2 = (drag_track.x2 - endpoint_2_candidate.x) ** 2 + (
-                drag_track.y2 - endpoint_2_candidate.y
-            ) ** 2
+            distance_2 = math.hypot(
+                drag_track.x2 - endpoint_2_candidate.x,
+                drag_track.y2 - endpoint_2_candidate.y,
+            )
             candidates.append((distance_2, 2, endpoint_2_candidate))
 
         if not candidates:
@@ -828,6 +1262,37 @@ class DesignCanvas(ttk.Frame):
         candidates.sort(key=lambda item: item[0])
         _, endpoint_index, candidate = candidates[0]
         return endpoint_index, candidate
+
+    def _find_turnout_body_drag_snap_candidate(
+        self,
+        drag_turnout: TurnoutElement,
+    ) -> tuple[str, SnapCandidate] | None:
+        import math
+
+        endpoints = self._get_turnout_endpoint_positions(drag_turnout)
+        candidates: list[tuple[float, str, SnapCandidate]] = []
+
+        for endpoint_name in ("trunk", "straight", "diverging"):
+            endpoint_x, endpoint_y = endpoints[endpoint_name]
+
+            candidate = self._find_nearest_canvas_endpoint(
+                endpoint_x,
+                endpoint_y,
+                ignore_turnout=drag_turnout,
+                ignore_turnout_endpoint_name=endpoint_name,
+            )
+            if candidate is None:
+                continue
+
+            distance = math.hypot(endpoint_x - candidate.x, endpoint_y - candidate.y)
+            candidates.append((distance, endpoint_name, candidate))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0])
+        _, endpoint_name, candidate = candidates[0]
+        return endpoint_name, candidate
 
     def _commit_body_drag_snap(
         self,
@@ -894,6 +1359,23 @@ class DesignCanvas(ttk.Frame):
             tolerance=6.0,
         )
 
+    def _is_point_on_selected_turnout(
+        self,
+        world_x: float,
+        world_y: float,
+    ) -> bool:
+        if self._selected_turnout_id is None:
+            return False
+
+        turnout = next(
+            (t for t in self._turnouts if t.id == self._selected_turnout_id),
+            None,
+        )
+        if turnout is None:
+            return False
+
+        return self._find_turnout_at_point(world_x, world_y) is not None
+
     def _update_track_hover_cursor(self) -> None:
         if self._creating_track:
             self.canvas.configure(cursor=self.CURSOR_DEFAULT)
@@ -910,11 +1392,23 @@ class DesignCanvas(ttk.Frame):
             self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
             return
 
+        if self._find_selected_turnout_endpoint_at_point(world_x, world_y) is not None:
+            self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
+            return
+
         if self._is_point_on_selected_track_body(world_x, world_y):
             self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
             return
 
+        if self._is_point_on_selected_turnout(world_x, world_y):
+            self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
+            return
+
         if self._find_track_at_point(world_x, world_y) is not None:
+            self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
+            return
+
+        if self._find_turnout_at_point(world_x, world_y) is not None:
             self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
             return
 
@@ -941,8 +1435,10 @@ class DesignCanvas(ttk.Frame):
         self._draw_background()
         self._draw_grid_if_enabled()
         self._draw_tracks()
+        self._draw_turnouts()
         self._draw_guides()
         self._draw_selected_track_handles()
+        self._draw_selected_turnout_handles()
         self._draw_endpoint_snap_preview()
         self._draw_endpoint_snap_flash()
         self._draw_track_snap_preview()
@@ -1068,6 +1564,157 @@ class DesignCanvas(ttk.Frame):
                 fill="#555",
                 outline="",
                 tags=("temp_track_endpoint",),
+            )
+
+    def _draw_turnouts(self) -> None:
+        import math
+
+        for turnout in self._turnouts:
+            x = turnout.x
+            y = turnout.y
+
+            base_angle_rad = math.radians(turnout.angle_degrees)
+            diverge_delta_rad = math.radians(turnout.diverge_angle_degrees)
+
+            if turnout.is_left_hand:
+                diverge_angle_rad = base_angle_rad - diverge_delta_rad
+            else:
+                diverge_angle_rad = base_angle_rad + diverge_delta_rad
+
+            trunk_length = turnout.length * 0.35
+
+            trunk_end_x = x + (trunk_length * math.cos(base_angle_rad))
+            trunk_end_y = y + (trunk_length * math.sin(base_angle_rad))
+
+            straight_remaining = turnout.length - trunk_length
+            straight_end_x = trunk_end_x + (
+                straight_remaining * math.cos(base_angle_rad)
+            )
+            straight_end_y = trunk_end_y + (
+                straight_remaining * math.sin(base_angle_rad)
+            )
+
+            diverge_end_x = trunk_end_x + (
+                turnout.diverge_length * math.cos(diverge_angle_rad)
+            )
+            diverge_end_y = trunk_end_y + (
+                turnout.diverge_length * math.sin(diverge_angle_rad)
+            )
+
+            is_selected = turnout.id == self._selected_turnout_id
+
+            if is_selected:
+                self.canvas.create_line(
+                    x,
+                    y,
+                    trunk_end_x,
+                    trunk_end_y,
+                    fill="#ff9900",
+                    width=8,
+                    capstyle=tk.ROUND,
+                    tags=("turnout_selection", turnout.id),
+                )
+                self.canvas.create_line(
+                    trunk_end_x,
+                    trunk_end_y,
+                    straight_end_x,
+                    straight_end_y,
+                    fill="#ff9900",
+                    width=8,
+                    capstyle=tk.ROUND,
+                    tags=("turnout_selection", turnout.id),
+                )
+                self.canvas.create_line(
+                    trunk_end_x,
+                    trunk_end_y,
+                    diverge_end_x,
+                    diverge_end_y,
+                    fill="#ff9900",
+                    width=8,
+                    capstyle=tk.ROUND,
+                    tags=("turnout_selection", turnout.id),
+                )
+
+            # trunk
+            self.canvas.create_line(
+                x,
+                y,
+                trunk_end_x,
+                trunk_end_y,
+                fill="#444",
+                width=4,
+                capstyle=tk.ROUND,
+                tags=("turnout", turnout.id),
+            )
+
+            # straight route
+            self.canvas.create_line(
+                trunk_end_x,
+                trunk_end_y,
+                straight_end_x,
+                straight_end_y,
+                fill="#444",
+                width=4,
+                capstyle=tk.ROUND,
+                tags=("turnout", turnout.id),
+            )
+
+            # diverging route
+            self.canvas.create_line(
+                trunk_end_x,
+                trunk_end_y,
+                diverge_end_x,
+                diverge_end_y,
+                fill="#444",
+                width=4,
+                capstyle=tk.ROUND,
+                tags=("turnout", turnout.id),
+            )
+
+            r = 4
+
+            # trunk start endpoint
+            self.canvas.create_oval(
+                x - r,
+                y - r,
+                x + r,
+                y + r,
+                fill="#222",
+                outline="",
+                tags=("turnout_endpoint", turnout.id, f"{turnout.id}:trunk"),
+            )
+
+            # split point marker
+            self.canvas.create_oval(
+                trunk_end_x - r,
+                trunk_end_y - r,
+                trunk_end_x + r,
+                trunk_end_y + r,
+                fill="#222",
+                outline="",
+                tags=("turnout_joint", turnout.id),
+            )
+
+            # straight endpoint
+            self.canvas.create_oval(
+                straight_end_x - r,
+                straight_end_y - r,
+                straight_end_x + r,
+                straight_end_y + r,
+                fill="#222",
+                outline="",
+                tags=("turnout_endpoint", turnout.id, f"{turnout.id}:straight"),
+            )
+
+            # diverging endpoint
+            self.canvas.create_oval(
+                diverge_end_x - r,
+                diverge_end_y - r,
+                diverge_end_x + r,
+                diverge_end_y + r,
+                fill="#222",
+                outline="",
+                tags=("turnout_endpoint", turnout.id, f"{turnout.id}:diverging"),
             )
 
     def _draw_track_snap_preview(self) -> None:
@@ -1231,6 +1878,79 @@ class DesignCanvas(ttk.Frame):
                 tags=("track_handle_center", selected_track.id),
             )
 
+    def _draw_selected_turnout_handles(self) -> None:
+        import math
+
+        if self._selected_turnout_id is None:
+            return
+
+        selected_turnout = next(
+            (
+                turnout
+                for turnout in self._turnouts
+                if turnout.id == self._selected_turnout_id
+            ),
+            None,
+        )
+        if selected_turnout is None:
+            return
+
+        x = selected_turnout.x
+        y = selected_turnout.y
+
+        base_angle_rad = math.radians(selected_turnout.angle_degrees)
+        diverge_delta_rad = math.radians(selected_turnout.diverge_angle_degrees)
+
+        if selected_turnout.is_left_hand:
+            diverge_angle_rad = base_angle_rad - diverge_delta_rad
+        else:
+            diverge_angle_rad = base_angle_rad + diverge_delta_rad
+
+        trunk_length = selected_turnout.length * 0.35
+
+        trunk_end_x = x + (trunk_length * math.cos(base_angle_rad))
+        trunk_end_y = y + (trunk_length * math.sin(base_angle_rad))
+
+        straight_remaining = selected_turnout.length - trunk_length
+        straight_end_x = trunk_end_x + (straight_remaining * math.cos(base_angle_rad))
+        straight_end_y = trunk_end_y + (straight_remaining * math.sin(base_angle_rad))
+
+        diverge_end_x = trunk_end_x + (
+            selected_turnout.diverge_length * math.cos(diverge_angle_rad)
+        )
+        diverge_end_y = trunk_end_y + (
+            selected_turnout.diverge_length * math.sin(diverge_angle_rad)
+        )
+
+        outer_radius = 7
+        center_radius = 3
+
+        for handle_x, handle_y in (
+            (x, y),  # trunk endpoint
+            (straight_end_x, straight_end_y),  # straight endpoint
+            (diverge_end_x, diverge_end_y),  # diverging endpoint
+        ):
+            self.canvas.create_oval(
+                handle_x - outer_radius,
+                handle_y - outer_radius,
+                handle_x + outer_radius,
+                handle_y + outer_radius,
+                fill="white",
+                outline="#ff9900",
+                width=2,
+                tags=("turnout_handle", selected_turnout.id),
+            )
+
+            self.canvas.create_oval(
+                handle_x - center_radius,
+                handle_y - center_radius,
+                handle_x + center_radius,
+                handle_y + center_radius,
+                fill="#222",
+                outline="",
+                tags=("turnout_handle_center", selected_turnout.id),
+            )
+
     def _draw_guides(self) -> None:
         if not self._show_rulers:
             return
@@ -1389,8 +2109,68 @@ class DesignCanvas(ttk.Frame):
             self._clear_endpoint_snap_candidate()
             self.redraw()
 
+        elif self._active_turnout_drag_id is not None:
+            drag_turnout = self._get_active_drag_turnout()
+
+            if self._active_turnout_endpoint_drag is not None:
+                if (
+                    self._show_snap
+                    and drag_turnout is not None
+                    and self._endpoint_snap_candidate is not None
+                    and self._endpoint_snap_candidate.is_valid
+                ):
+                    snap = self._endpoint_snap_candidate
+                    self._move_turnout_endpoint_to_snap_candidate(
+                        drag_turnout,
+                        self._active_turnout_endpoint_drag,
+                        snap,
+                    )
+
+                    self._endpoint_snap_flash = (snap.x, snap.y)
+                    self.after(150, self._clear_snap_flash)
+
+                    self._set_status_message(
+                        f"Turnout endpoint snapped: {self._active_turnout_endpoint_drag}."
+                    )
+                else:
+                    self._set_status_message(
+                        f"Turnout endpoint moved: {self._active_turnout_endpoint_drag}."
+                    )
+
+                self._clear_endpoint_snap_candidate()
+
+            else:
+                if (
+                    self._show_snap
+                    and drag_turnout is not None
+                    and self._turnout_body_drag_snap_endpoint_name is not None
+                    and self._endpoint_snap_candidate is not None
+                    and self._endpoint_snap_candidate.is_valid
+                ):
+                    snap = self._endpoint_snap_candidate
+                    self._commit_turnout_body_snap(
+                        drag_turnout,
+                        self._turnout_body_drag_snap_endpoint_name,
+                        snap,
+                    )
+
+                    self._endpoint_snap_flash = (snap.x, snap.y)
+                    self.after(150, self._clear_snap_flash)
+
+                    self._set_status_message("Turnout docked to endpoint.")
+                else:
+                    self._set_status_message("Turnout moved.")
+
+                self._turnout_body_drag_snap_endpoint_name = None
+                self._clear_endpoint_snap_candidate()
+
+            self.redraw()
+
         self._active_track_drag_id = None
+        self._active_turnout_drag_id = None
         self._active_endpoint_drag = None
+        self._active_turnout_endpoint_drag = None
+        self._turnout_body_drag_snap_endpoint_name = None
         self._drag_start_world_x = None
         self._drag_start_world_y = None
 
@@ -1414,10 +2194,9 @@ class DesignCanvas(ttk.Frame):
 
                 if self._active_endpoint_drag is not None:
                     if self._show_snap:
-                        candidate = find_nearest_endpoint(
+                        candidate = self._find_nearest_canvas_endpoint(
                             world_x,
                             world_y,
-                            self._tracks,
                             ignore_track=drag_track,
                         )
                         self._endpoint_snap_candidate = candidate
@@ -1477,16 +2256,85 @@ class DesignCanvas(ttk.Frame):
                 self.redraw()
             return
 
+        if self._active_turnout_drag_id is not None:
+            drag_turnout = self._get_active_drag_turnout()
+            if drag_turnout is not None:
+                world_x = self.canvas.canvasx(event.x)
+                world_y = self.canvas.canvasy(event.y)
+
+                if self._active_turnout_endpoint_drag is not None:
+                    if self._show_snap:
+                        candidate = self._find_nearest_canvas_endpoint(
+                            world_x,
+                            world_y,
+                            ignore_turnout=drag_turnout,
+                            ignore_turnout_endpoint_name=self._active_turnout_endpoint_drag,
+                        )
+                        self._endpoint_snap_candidate = candidate
+
+                        if candidate is not None and candidate.is_valid:
+                            move_x = candidate.x
+                            move_y = candidate.y
+                            self._set_endpoint_snap_status_message()
+                        elif candidate is not None:
+                            move_x = world_x
+                            move_y = world_y
+                            self._set_endpoint_snap_status_message()
+                        else:
+                            self._clear_endpoint_snap_candidate()
+                            move_x = world_x
+                            move_y = world_y
+                    else:
+                        self._clear_endpoint_snap_candidate()
+                        move_x = world_x
+                        move_y = world_y
+
+                    self._move_turnout_endpoint(
+                        drag_turnout,
+                        self._active_turnout_endpoint_drag,
+                        move_x,
+                        move_y,
+                    )
+
+                elif (
+                    self._drag_start_world_x is not None
+                    and self._drag_start_world_y is not None
+                ):
+                    dx = world_x - self._drag_start_world_x
+                    dy = world_y - self._drag_start_world_y
+
+                    self._move_turnout_body(drag_turnout, dx, dy)
+
+                    self._drag_start_world_x = world_x
+                    self._drag_start_world_y = world_y
+
+                    if self._show_snap:
+                        body_drag_result = self._find_turnout_body_drag_snap_candidate(
+                            drag_turnout
+                        )
+                        if body_drag_result is not None:
+                            endpoint_name, candidate = body_drag_result
+                            self._turnout_body_drag_snap_endpoint_name = endpoint_name
+                            self._endpoint_snap_candidate = candidate
+                            self._set_endpoint_snap_status_message()
+                        else:
+                            self._turnout_body_drag_snap_endpoint_name = None
+                            self._clear_endpoint_snap_candidate()
+                    else:
+                        self._turnout_body_drag_snap_endpoint_name = None
+                        self._clear_endpoint_snap_candidate()
+
+                self.redraw()
+            return
+
         if self._creating_track and self._temp_track is not None:
             world_x = self.canvas.canvasx(event.x)
             world_y = self.canvas.canvasy(event.y)
 
             if self._show_snap:
-                candidate = find_nearest_endpoint(
+                candidate = self._find_nearest_canvas_endpoint(
                     world_x,
                     world_y,
-                    self._tracks,
-                    ignore_track=self._temp_track,
                 )
 
                 self._endpoint_snap_candidate = candidate
@@ -1524,17 +2372,48 @@ class DesignCanvas(ttk.Frame):
 
         if clicked_endpoint is not None:
             self._active_track_drag_id = self._selected_track_id
+            self._active_turnout_drag_id = None
             self._active_endpoint_drag = clicked_endpoint
+            self._active_turnout_endpoint_drag = None
             self._drag_start_world_x = world_x
             self._drag_start_world_y = world_y
             self._body_drag_snap_endpoint_index = None
             self._clear_endpoint_snap_candidate()
-            self._set_status_message(f"Dragging endpoint {clicked_endpoint}.")
+
+            track = self._get_selected_track()
+            if track is not None and self._endpoint_is_coincident(
+                track, clicked_endpoint
+            ):
+                self._set_status_message("Endpoint disconnected.")
+            else:
+                self._set_status_message(f"Dragging endpoint {clicked_endpoint}.")
+
+            return
+
+        clicked_turnout_endpoint = self._find_selected_turnout_endpoint_at_point(
+            world_x,
+            world_y,
+        )
+        if clicked_turnout_endpoint is not None:
+            self._active_turnout_drag_id = self._selected_turnout_id
+            self._active_track_drag_id = None
+            self._active_turnout_endpoint_drag = clicked_turnout_endpoint
+            self._active_endpoint_drag = None
+            self._drag_start_world_x = world_x
+            self._drag_start_world_y = world_y
+            self._body_drag_snap_endpoint_index = None
+            self._turnout_body_drag_snap_endpoint_name = None
+            self._clear_endpoint_snap_candidate()
+            self._set_status_message(
+                f"Turnout endpoint selected: {clicked_turnout_endpoint}."
+            )
             return
 
         if self._is_point_on_selected_track_body(world_x, world_y):
             self._active_track_drag_id = self._selected_track_id
+            self._active_turnout_drag_id = None
             self._active_endpoint_drag = None
+            self._active_turnout_endpoint_drag = None
             self._drag_start_world_x = world_x
             self._drag_start_world_y = world_y
             self._body_drag_snap_endpoint_index = None
@@ -1545,17 +2424,48 @@ class DesignCanvas(ttk.Frame):
         clicked_track = self._find_track_at_point(world_x, world_y)
         if clicked_track is not None:
             self._selected_track_id = clicked_track.id
+            self._selected_turnout_id = None
             self.redraw()
             self._set_status_message("Track selected.")
             return
 
-        # Shift + click on empty canvas = start track creation
+        clicked_turnout = self._find_turnout_at_point(world_x, world_y)
+        if clicked_turnout is not None:
+            if self._selected_turnout_id == clicked_turnout.id:
+                self._active_turnout_drag_id = clicked_turnout.id
+                self._active_track_drag_id = None
+                self._active_endpoint_drag = None
+                self._active_turnout_endpoint_drag = None
+                self._drag_start_world_x = world_x
+                self._drag_start_world_y = world_y
+                self._turnout_body_drag_snap_endpoint_name = None
+                self._clear_endpoint_snap_candidate()
+                self._set_status_message("Dragging turnout.")
+                return
+
+            self._selected_turnout_id = clicked_turnout.id
+            self._selected_track_id = None
+            self.redraw()
+            self._set_status_message("Turnout selected.")
+            return
+
+        # Shift + click uses the active Trackwork element
         if state & 0x0001:  # Shift
             self._selected_track_id = None
+            self._selected_turnout_id = None
             self._active_track_drag_id = None
+            self._active_turnout_drag_id = None
             self._active_endpoint_drag = None
+            self._active_turnout_endpoint_drag = None
             self._drag_start_world_x = None
             self._drag_start_world_y = None
+
+            if self._current_trackwork_element == "Turnout":
+                turnout = TurnoutElement.create(world_x, world_y)
+                self._turnouts.append(turnout)
+                self.redraw()
+                self._set_status_message("Turnout placed.")
+                return
 
             self._creating_track = True
             self._temp_track = StraightTrackElement.create(
@@ -1570,11 +2480,16 @@ class DesignCanvas(ttk.Frame):
             return
 
         # Plain click on empty canvas = clear selection
-        selection_was_cleared = self._selected_track_id is not None
+        selection_was_cleared = (
+            self._selected_track_id is not None or self._selected_turnout_id is not None
+        )
 
         self._selected_track_id = None
+        self._selected_turnout_id = None
         self._active_track_drag_id = None
+        self._active_turnout_drag_id = None
         self._active_endpoint_drag = None
+        self._active_turnout_endpoint_drag = None
         self._drag_start_world_x = None
         self._drag_start_world_y = None
 

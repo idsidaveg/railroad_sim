@@ -50,7 +50,13 @@ class RailroadStudioApp:
         self.show_snap_var.trace_add("write", lambda *_: self._sync_view_state())
         self.show_rulers_var.trace_add("write", lambda *_: self._sync_view_state())
 
+        self.trackwork_element_var.trace_add(
+            "write",
+            lambda *_: self._sync_trackwork_state(),
+        )
+
         self._sync_view_state()
+        self._sync_trackwork_state()
 
     # ------------------------------------------------------------------
     # Style
@@ -334,6 +340,10 @@ class RailroadStudioApp:
             self.design_canvas.set_show_grid(self.show_grid_var.get())
             self.design_canvas.set_show_snap(self.show_snap_var.get())
             self.design_canvas.set_show_rulers(self.show_rulers_var.get())
+
+    def _sync_trackwork_state(self) -> None:
+        if hasattr(self, "design_canvas"):
+            self.design_canvas.set_trackwork_element(self.trackwork_element_var.get())
 
     # ------------------------------------------------------------------
     # Status Bar

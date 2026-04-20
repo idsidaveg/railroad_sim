@@ -124,7 +124,8 @@
 │       │           │   │   ├── __init__.py
 │       │           │   │   └── ruler_widgets.py
 │       │           │   ├── design_canvas.py
-│       │           │   └── __init__.py
+│       │           │   ├── __init__.py
+│       │           │   └── snap_helpers.py
 │       │           ├── controllers
 │       │           │   └── __init__.py
 │       │           ├── models
@@ -213,4 +214,4 @@
 ├── README.md
 └── tree_output.txt
 
-41 directories, 173 files
+41 directories, 174 files
