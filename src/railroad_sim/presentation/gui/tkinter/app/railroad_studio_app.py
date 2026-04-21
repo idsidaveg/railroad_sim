@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import simpledialog, ttk
 
 from railroad_sim.presentation.gui.tkinter.canvas.design_canvas import DesignCanvas
 from railroad_sim.presentation.gui.tkinter.panels.inspector_panel import InspectorPanel
@@ -131,12 +131,45 @@ class RailroadStudioApp:
             style="Studio.Section.TLabel",
         ).pack(side="left", padx=(0, 8))
 
-        for label in ("Select", "Move", "Rotate", "Delete"):
-            ttk.Button(
-                group,
-                text=label,
-                style="Studio.Toolbar.TButton",
-            ).pack(side="left", padx=(0, 3))
+        ttk.Button(
+            group,
+            text="Select",
+            style="Studio.Toolbar.TButton",
+        ).pack(side="left", padx=(0, 3))
+
+        ttk.Button(
+            group,
+            text="Move",
+            style="Studio.Toolbar.TButton",
+        ).pack(side="left", padx=(0, 3))
+
+        ttk.Button(
+            group,
+            text="Rotate -15°",
+            style="Studio.Toolbar.TButton",
+            command=self._on_rotate_counterclockwise,
+        ).pack(side="left", padx=(0, 3))
+
+        ttk.Button(
+            group,
+            text="Rotate +15°",
+            style="Studio.Toolbar.TButton",
+            command=self._on_rotate_clockwise,
+        ).pack(side="left", padx=(0, 3))
+
+        ttk.Button(
+            group,
+            text="Specify Angle...",
+            style="Studio.Toolbar.TButton",
+            command=self._on_rotate_specify_angle,
+        ).pack(side="left", padx=(0, 3))
+
+        ttk.Button(
+            group,
+            text="Delete",
+            style="Studio.Toolbar.TButton",
+            command=self._on_trackwork_delete,
+        ).pack(side="left", padx=(0, 3))
 
     def _build_trackwork_group(self, parent: ttk.Frame) -> None:
         group = ttk.Frame(parent)
@@ -163,12 +196,26 @@ class RailroadStudioApp:
             font=("Arial", 8),
         ).pack(side="left", padx=(0, 4))
 
-        for label in ("Add", "Delete", "Select All"):
-            ttk.Button(
-                group,
-                text=label,
-                style="Studio.Toolbar.TButton",
-            ).pack(side="left", padx=(0, 3))
+        ttk.Button(
+            group,
+            text="Add",
+            style="Studio.Toolbar.TButton",
+            command=self._on_trackwork_add,
+        ).pack(side="left", padx=(0, 3))
+
+        ttk.Button(
+            group,
+            text="Delete",
+            style="Studio.Toolbar.TButton",
+            command=self._on_trackwork_delete,
+        ).pack(side="left", padx=(0, 3))
+
+        ttk.Button(
+            group,
+            text="Select All",
+            style="Studio.Toolbar.TButton",
+            command=self._on_trackwork_select_all,
+        ).pack(side="left", padx=(0, 3))
 
     def _build_view_controls_group(self, parent: ttk.Frame) -> None:
         group = ttk.Frame(parent)
@@ -344,6 +391,45 @@ class RailroadStudioApp:
     def _sync_trackwork_state(self) -> None:
         if hasattr(self, "design_canvas"):
             self.design_canvas.set_trackwork_element(self.trackwork_element_var.get())
+
+    def _on_trackwork_add(self) -> None:
+        if hasattr(self, "design_canvas"):
+            self.design_canvas.arm_add_current_trackwork_element()
+
+    def _on_trackwork_delete(self) -> None:
+        if hasattr(self, "design_canvas"):
+            self.design_canvas.delete_selected_trackwork()
+
+    def _on_trackwork_select_all(self) -> None:
+        if hasattr(self, "design_canvas"):
+            self.design_canvas.select_all_trackwork()
+
+    def _on_rotate_clockwise(self) -> None:
+        if hasattr(self, "design_canvas"):
+            self.design_canvas.rotate_selected_trackwork_clockwise(15.0)
+
+    def _on_rotate_counterclockwise(self) -> None:
+        if hasattr(self, "design_canvas"):
+            self.design_canvas.rotate_selected_trackwork_counterclockwise(15.0)
+
+    def _on_rotate_specify_angle(self) -> None:
+        degrees = simpledialog.askfloat(
+            "Specify Rotation",
+            "Rotate selected trackwork by degrees:",
+            parent=self.root,
+            minvalue=-360.0,
+            maxvalue=360.0,
+        )
+
+        if degrees is None:
+            return
+
+        if abs(degrees) < 1e-9:
+            self.status_var.set("Rotation skipped (0°).")
+            return
+
+        if hasattr(self, "design_canvas"):
+            self.design_canvas.rotate_selected_trackwork_by_custom_angle(degrees)
 
     # ------------------------------------------------------------------
     # Status Bar

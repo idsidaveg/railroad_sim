@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import simpledialog, ttk
 from typing import Callable
 
 from railroad_sim.presentation.gui.tkinter.canvas.elements import (
@@ -15,6 +15,12 @@ from railroad_sim.presentation.gui.tkinter.canvas.rulers.ruler_widgets import (
 )
 from railroad_sim.presentation.gui.tkinter.canvas.snap_helpers import (
     SnapCandidate,
+)
+from railroad_sim.presentation.gui.tkinter.utils.rotation_utils import (
+    rotate_straight_track,
+    rotate_straight_track_about_pivot,
+    rotate_turnout,
+    rotate_turnout_about_pivot,
 )
 
 
@@ -47,6 +53,7 @@ class DesignCanvas(ttk.Frame):
     CURSOR_VERTICAL_GUIDE = "sb_h_double_arrow"
     CURSOR_HORIZONTAL_GUIDE = "sb_v_double_arrow"
     CURSOR_SELECTABLE = "hand2"
+    CURSOR_ADD_ARMED = "crosshair"
 
     GUIDE_AUTOSCROLL_EDGE_MARGIN = 24
     GUIDE_AUTOSCROLL_UNITS_PER_TICK = 8
@@ -63,18 +70,28 @@ class DesignCanvas(ttk.Frame):
     ) -> None:
         super().__init__(parent, padding=0)
 
+        # ------------------------------------------------------------------
+        # External callbacks
+        # ------------------------------------------------------------------
         self.on_mouse_move = on_mouse_move
         self.on_status_message = on_status_message
+
+        # ------------------------------------------------------------------
+        # Canvas/world configuration
+        # ------------------------------------------------------------------
         self.world_width = self.DEFAULT_WORLD_WIDTH
         self.world_height = self.DEFAULT_WORLD_HEIGHT
         self.grid_spacing = self.DEFAULT_GRID_SPACING
         self._last_mouse_canvas_x: int | None = None
         self._last_mouse_canvas_y: int | None = None
+
+        # ------------------------------------------------------------------
+        # Guide/ruler state
+        # ------------------------------------------------------------------
         self.guides = GuideModel(
             max_vertical_guides=self.MAX_VERTICAL_GUIDES,
             max_horizontal_guides=self.MAX_HORIZONTAL_GUIDES,
         )
-
         self._dragging_new_vertical_guide = False
         self._dragging_new_horizontal_guide = False
         self._temp_vertical_guide_x: float | None = None
@@ -88,13 +105,43 @@ class DesignCanvas(ttk.Frame):
         self._moving_horizontal_guide_index: int | None = None
         self._guide_hit_tolerance = 6.0
 
-        # track elements
-        self._creating_track = False
-        self._temp_track: StraightTrackElement | None = None
+        # ------------------------------------------------------------------
+        # Canvas elements / committed layout objects
+        # ------------------------------------------------------------------
         self._tracks: list[StraightTrackElement] = []
         self._turnouts: list[TurnoutElement] = []
+
+        # ------------------------------------------------------------------
+        # Placement / creation mode
+        # ------------------------------------------------------------------
+        self._creating_track = False
+        self._temp_track: StraightTrackElement | None = None
+        self._current_trackwork_element = "Track"
+        self._pending_trackwork_add = False
+
+        # ------------------------------------------------------------------
+        # Selection state
+        # single-selection = editing handles / endpoint editing
+        # multi-selection = marquee/group operations
+        # ------------------------------------------------------------------
         self._selected_track_id: str | None = None
         self._selected_turnout_id: str | None = None
+        self._selected_track_ids: set[str] = set()
+        self._selected_turnout_ids: set[str] = set()
+
+        # ------------------------------------------------------------------
+        # Marquee selection / group move
+        # ------------------------------------------------------------------
+        self._marquee_selecting = False
+        self._marquee_start_world_x: float | None = None
+        self._marquee_start_world_y: float | None = None
+        self._marquee_current_world_x: float | None = None
+        self._marquee_current_world_y: float | None = None
+        self._group_dragging = False
+
+        # ------------------------------------------------------------------
+        # Active drag state
+        # ------------------------------------------------------------------
         self._active_track_drag_id: str | None = None
         self._active_turnout_drag_id: str | None = None
         self._active_endpoint_drag: int | None = None  # 1 or 2
@@ -104,19 +151,24 @@ class DesignCanvas(ttk.Frame):
         self._drag_start_world_x: float | None = None
         self._drag_start_world_y: float | None = None
 
-        # temporary snap preview during track creation
+        # ------------------------------------------------------------------
+        # Temporary snap preview during track creation
+        # ------------------------------------------------------------------
         self._track_snap_preview_x: float | None = None
         self._track_snap_preview_y: float | None = None
         self._track_snap_preview_show_vertical = False
         self._track_snap_preview_show_horizontal = False
 
-        # snap helpers
+        # ------------------------------------------------------------------
+        # Snap preview / snap commit helpers
+        # ------------------------------------------------------------------
         self._endpoint_snap_candidate = None
         self._endpoint_snap_flash = None
         self._body_drag_snap_endpoint_index: int | None = None
         self._turnout_body_drag_snap_endpoint_name: str | None = None
 
         self._build_ui()
+        self._build_canvas_context_menu()
         self._configure_canvas()
         self.redraw()
 
@@ -214,6 +266,112 @@ class DesignCanvas(ttk.Frame):
         self.canvas.bind("<KeyRelease-Alt_R>", self._on_alt_release)
 
         self.canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
+        self.canvas.bind("<Button-3>", self._on_canvas_right_click)
+
+    def _build_canvas_context_menu(self) -> None:
+        self.canvas_context_menu = tk.Menu(self.canvas, tearoff=0)
+
+        self.canvas_context_menu.add_command(
+            label="Rotate -90°",
+            command=lambda: self.rotate_selected_trackwork_counterclockwise(90.0),
+        )
+        self.canvas_context_menu.add_command(
+            label="Rotate -45°",
+            command=lambda: self.rotate_selected_trackwork_counterclockwise(45.0),
+        )
+        self.canvas_context_menu.add_command(
+            label="Rotate -15°",
+            command=lambda: self.rotate_selected_trackwork_counterclockwise(15.0),
+        )
+
+        self.canvas_context_menu.add_separator()
+
+        self.canvas_context_menu.add_command(
+            label="Rotate +15°",
+            command=lambda: self.rotate_selected_trackwork_clockwise(15.0),
+        )
+        self.canvas_context_menu.add_command(
+            label="Rotate +45°",
+            command=lambda: self.rotate_selected_trackwork_clockwise(45.0),
+        )
+        self.canvas_context_menu.add_command(
+            label="Rotate +90°",
+            command=lambda: self.rotate_selected_trackwork_clockwise(90.0),
+        )
+        self.canvas_context_menu.add_separator()
+        self.canvas_context_menu.add_command(
+            label="Specify Angle...",
+            command=self._on_context_menu_rotate_specify_angle,
+        )
+
+    def _on_canvas_right_click(self, event: tk.Event) -> None:
+        world_x = self.canvas.canvasx(event.x)
+        world_y = self.canvas.canvasy(event.y)
+
+        # --------------------------------------------------------------
+        # If a group is selected and the right-click lands on that group,
+        # preserve the group selection and open the rotate menu.
+        # --------------------------------------------------------------
+        if self._has_group_selection():
+            if self._is_point_on_group_selected_track_body(
+                world_x,
+                world_y,
+            ) or self._is_point_on_group_selected_turnout(world_x, world_y):
+                self.redraw()
+                self._set_status_message("Selected group ready.")
+                self.canvas_context_menu.tk_popup(event.x_root, event.y_root)
+                return
+
+        # --------------------------------------------------------------
+        # Hit test track first
+        # --------------------------------------------------------------
+        clicked_track = self._find_track_at_point(world_x, world_y)
+        if clicked_track is not None:
+            self._clear_group_selection()
+            self._selected_track_id = clicked_track.id
+            self._selected_turnout_id = None
+            self.redraw()
+            self._set_status_message("Track selected.")
+
+            self.canvas_context_menu.tk_popup(event.x_root, event.y_root)
+            return
+
+        # --------------------------------------------------------------
+        # Hit test turnout
+        # --------------------------------------------------------------
+        clicked_turnout = self._find_turnout_at_point(world_x, world_y)
+        if clicked_turnout is not None:
+            self._clear_group_selection()
+            self._selected_turnout_id = clicked_turnout.id
+            self._selected_track_id = None
+            self.redraw()
+            self._set_status_message("Turnout selected.")
+
+            self.canvas_context_menu.tk_popup(event.x_root, event.y_root)
+            return
+
+        # --------------------------------------------------------------
+        # Empty canvas → do NOT show rotate menu
+        # --------------------------------------------------------------
+        return
+
+    def _on_context_menu_rotate_specify_angle(self) -> None:
+        degrees = simpledialog.askfloat(
+            "Specify Rotation",
+            "Rotate selected trackwork by degrees:",
+            parent=self.winfo_toplevel(),
+            minvalue=-360.0,
+            maxvalue=360.0,
+        )
+
+        if degrees is None:
+            return
+
+        if abs(degrees) < 1e-9:
+            self._set_status_message("Rotation skipped (0°).")
+            return
+
+        self.rotate_selected_trackwork_by_custom_angle(degrees)
 
     def _configure_canvas(self) -> None:
         self.canvas.configure(
@@ -270,6 +428,367 @@ class DesignCanvas(ttk.Frame):
         self._current_trackwork_element = value
         self._set_status_message(f"Trackwork element set to {value}.")
 
+    def arm_add_current_trackwork_element(self) -> None:
+        self._pending_trackwork_add = True
+        self._selected_track_id = None
+        self._selected_turnout_id = None
+        self._active_track_drag_id = None
+        self._active_turnout_drag_id = None
+        self._active_endpoint_drag = None
+        self._active_turnout_endpoint_drag = None
+        self._drag_start_world_x = None
+        self._drag_start_world_y = None
+        self._clear_endpoint_snap_candidate()
+        self._clear_track_snap_preview()
+        self.redraw()
+        self._set_status_message(
+            f"Add armed: click canvas to place {self._current_trackwork_element}."
+        )
+        self._update_canvas_cursor_for_mode()
+
+    def delete_selected_trackwork(self) -> None:
+        if self._selected_track_ids or self._selected_turnout_ids:
+            self._tracks = [
+                track
+                for track in self._tracks
+                if track.id not in self._selected_track_ids
+            ]
+            self._turnouts = [
+                turnout
+                for turnout in self._turnouts
+                if turnout.id not in self._selected_turnout_ids
+            ]
+            self._clear_group_selection()
+            self._selected_track_id = None
+            self._selected_turnout_id = None
+            self._active_track_drag_id = None
+            self._active_turnout_drag_id = None
+            self._active_endpoint_drag = None
+            self._active_turnout_endpoint_drag = None
+            self._drag_start_world_x = None
+            self._drag_start_world_y = None
+            self._clear_endpoint_snap_candidate()
+            self.redraw()
+            self._set_status_message("Selected trackwork deleted.")
+            return
+
+        if self._selected_track_id is not None:
+            self._tracks = [
+                track for track in self._tracks if track.id != self._selected_track_id
+            ]
+            self._selected_track_id = None
+            self._active_track_drag_id = None
+            self._active_endpoint_drag = None
+            self._drag_start_world_x = None
+            self._drag_start_world_y = None
+            self._clear_endpoint_snap_candidate()
+            self.redraw()
+            self._set_status_message("Track deleted.")
+            return
+
+        if self._selected_turnout_id is not None:
+            self._turnouts = [
+                turnout
+                for turnout in self._turnouts
+                if turnout.id != self._selected_turnout_id
+            ]
+            self._selected_turnout_id = None
+            self._active_turnout_drag_id = None
+            self._active_turnout_endpoint_drag = None
+            self._drag_start_world_x = None
+            self._drag_start_world_y = None
+            self._clear_endpoint_snap_candidate()
+            self.redraw()
+            self._set_status_message("Turnout deleted.")
+            return
+
+        self._set_status_message("Nothing selected to delete.")
+
+    def select_all_trackwork(self) -> None:
+        if not self._tracks and not self._turnouts:
+            self._set_status_message("Nothing to select.")
+            return
+
+        self._selected_track_ids = {track.id for track in self._tracks}
+        self._selected_turnout_ids = {turnout.id for turnout in self._turnouts}
+        self._selected_track_id = None
+        self._selected_turnout_id = None
+        self._active_track_drag_id = None
+        self._active_turnout_drag_id = None
+        self._active_endpoint_drag = None
+        self._active_turnout_endpoint_drag = None
+        self._drag_start_world_x = None
+        self._drag_start_world_y = None
+        self._clear_endpoint_snap_candidate()
+        self.redraw()
+        self._set_status_message("All trackwork selected.")
+
+    def rotate_selected_trackwork_by_custom_angle(
+        self,
+        delta_degrees: float,
+    ) -> None:
+        """
+        Rotate the current single selected trackwork object by an arbitrary angle.
+        """
+        self.rotate_selected_trackwork(delta_degrees)
+
+    def rotate_selected_trackwork(self, delta_degrees: float) -> None:
+        """
+        Rotate the current selected trackwork object(s).
+
+        Current behavior:
+        - single selected straight track
+        - single selected turnout
+        - selected group rotation about group pivot
+        """
+        if self._has_group_selection():
+            pivot = self._get_selected_group_rotation_pivot()
+            if pivot is None:
+                self._set_status_message("Nothing selected to rotate.")
+                return
+
+            pivot_x, pivot_y = pivot
+
+            for track in self._tracks:
+                if track.id in self._selected_track_ids:
+                    rotate_straight_track_about_pivot(
+                        track,
+                        pivot_x,
+                        pivot_y,
+                        delta_degrees,
+                    )
+
+            for turnout in self._turnouts:
+                if turnout.id in self._selected_turnout_ids:
+                    rotate_turnout_about_pivot(
+                        turnout,
+                        pivot_x,
+                        pivot_y,
+                        delta_degrees,
+                    )
+
+            rotated_count = len(self._selected_track_ids) + len(
+                self._selected_turnout_ids
+            )
+            self._clear_endpoint_snap_candidate()
+            self.redraw()
+            self._set_status_message(
+                f"Rotated {rotated_count} selected piece(s) by {delta_degrees:.1f}°."
+            )
+            return
+
+        selected_track = self._get_selected_track()
+        if selected_track is not None:
+            rotate_straight_track(selected_track, delta_degrees)
+            self._clear_endpoint_snap_candidate()
+            self.redraw()
+            self._set_status_message(f"Rotated track by {delta_degrees:.1f}°.")
+            return
+
+        selected_turnout = self._get_selected_turnout()
+        if selected_turnout is not None:
+            rotate_turnout(selected_turnout, delta_degrees)
+            self._clear_endpoint_snap_candidate()
+            self.redraw()
+            self._set_status_message(f"Rotated turnout by {delta_degrees:.1f}°.")
+            return
+
+        self._set_status_message("Nothing selected to rotate.")
+
+    def rotate_selected_trackwork_clockwise(self, delta_degrees: float) -> None:
+        """
+        Convenience wrapper for clockwise UI actions.
+        """
+        self.rotate_selected_trackwork(delta_degrees)
+
+    def rotate_selected_trackwork_counterclockwise(
+        self,
+        delta_degrees: float,
+    ) -> None:
+        """
+        Convenience wrapper for counterclockwise UI actions.
+        """
+        self.rotate_selected_trackwork(-delta_degrees)
+
+    def _clear_group_selection(self) -> None:
+        self._selected_track_ids.clear()
+        self._selected_turnout_ids.clear()
+
+    def _has_group_selection(self) -> bool:
+        return bool(self._selected_track_ids or self._selected_turnout_ids)
+
+    def _track_intersects_rect(
+        self,
+        track: StraightTrackElement,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> bool:
+        left = min(x1, x2)
+        right = max(x1, x2)
+        top = min(y1, y2)
+        bottom = max(y1, y2)
+
+        pad = 4.0
+        track_left = min(track.x1, track.x2) - pad
+        track_right = max(track.x1, track.x2) + pad
+        track_top = min(track.y1, track.y2) - pad
+        track_bottom = max(track.y1, track.y2) + pad
+
+        return not (
+            track_right < left
+            or track_left > right
+            or track_bottom < top
+            or track_top > bottom
+        )
+
+    def _turnout_intersects_rect(
+        self,
+        turnout: TurnoutElement,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> bool:
+        left = min(x1, x2)
+        right = max(x1, x2)
+        top = min(y1, y2)
+        bottom = max(y1, y2)
+
+        endpoints = self._get_turnout_endpoint_positions(turnout)
+        xs = [turnout.x]
+        ys = [turnout.y]
+
+        for endpoint_x, endpoint_y in endpoints.values():
+            xs.append(endpoint_x)
+            ys.append(endpoint_y)
+
+        pad = 4.0
+        turnout_left = min(xs) - pad
+        turnout_right = max(xs) + pad
+        turnout_top = min(ys) - pad
+        turnout_bottom = max(ys) + pad
+
+        return not (
+            turnout_right < left
+            or turnout_left > right
+            or turnout_bottom < top
+            or turnout_top > bottom
+        )
+
+    def _commit_marquee_selection(self) -> None:
+        if (
+            self._marquee_start_world_x is None
+            or self._marquee_start_world_y is None
+            or self._marquee_current_world_x is None
+            or self._marquee_current_world_y is None
+        ):
+            return
+
+        x1 = self._marquee_start_world_x
+        y1 = self._marquee_start_world_y
+        x2 = self._marquee_current_world_x
+        y2 = self._marquee_current_world_y
+
+        self._selected_track_ids = {
+            track.id
+            for track in self._tracks
+            if self._track_intersects_rect(track, x1, y1, x2, y2)
+        }
+        self._selected_turnout_ids = {
+            turnout.id
+            for turnout in self._turnouts
+            if self._turnout_intersects_rect(turnout, x1, y1, x2, y2)
+        }
+
+        self._selected_track_id = None
+        self._selected_turnout_id = None
+
+    def _is_point_on_group_selected_track_body(
+        self,
+        world_x: float,
+        world_y: float,
+    ) -> bool:
+        for track in self._tracks:
+            if track.id not in self._selected_track_ids:
+                continue
+
+            if self._point_near_segment(
+                px=world_x,
+                py=world_y,
+                x1=track.x1,
+                y1=track.y1,
+                x2=track.x2,
+                y2=track.y2,
+                tolerance=6.0,
+            ):
+                return True
+
+        return False
+
+    def _is_point_on_group_selected_turnout(
+        self,
+        world_x: float,
+        world_y: float,
+    ) -> bool:
+        turnout = self._find_turnout_at_point(world_x, world_y)
+        if turnout is None:
+            return False
+
+        return turnout.id in self._selected_turnout_ids
+
+    def _move_selected_group(
+        self,
+        dx: float,
+        dy: float,
+    ) -> None:
+        for track in self._tracks:
+            if track.id in self._selected_track_ids:
+                track.move(dx, dy)
+
+        for turnout in self._turnouts:
+            if turnout.id in self._selected_turnout_ids:
+                turnout.move(dx, dy)
+
+    def _snap_value_to_grid(self, value: float) -> float:
+        return round(value / self.grid_spacing) * self.grid_spacing
+
+    def _snap_point_to_grid(
+        self,
+        x: float,
+        y: float,
+    ) -> tuple[float, float]:
+        return (
+            self._snap_value_to_grid(x),
+            self._snap_value_to_grid(y),
+        )
+
+    def _get_selected_group_rotation_pivot(self) -> tuple[float, float] | None:
+        points: list[tuple[float, float]] = []
+
+        for track in self._tracks:
+            if track.id in self._selected_track_ids:
+                points.append((track.x1, track.y1))
+                points.append((track.x2, track.y2))
+
+        for turnout in self._turnouts:
+            if turnout.id in self._selected_turnout_ids:
+                points.append((turnout.x, turnout.y))
+
+                endpoints = self._get_turnout_endpoint_positions(turnout)
+                points.extend(endpoints.values())
+
+        if not points:
+            return None
+
+        min_x = min(x for x, _ in points)
+        max_x = max(x for x, _ in points)
+        min_y = min(y for _, y in points)
+        max_y = max(y for _, y in points)
+
+        return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
     def set_show_snap(self, value: bool) -> None:
         self._show_snap = value
 
@@ -291,7 +810,17 @@ class DesignCanvas(ttk.Frame):
         self.h_ruler.configure(cursor=self.CURSOR_DEFAULT)
         self.v_ruler.configure(cursor=self.CURSOR_DEFAULT)
 
+    def _update_canvas_cursor_for_mode(self) -> None:
+        if self._pending_trackwork_add:
+            self.canvas.configure(cursor=self.CURSOR_ADD_ARMED)
+            return
+
+        self._update_track_hover_cursor()
+
     def _update_guide_hover_cursor(self) -> None:
+        if self._pending_trackwork_add:
+            return
+
         if self._active_guide_drag is not None:
             return
 
@@ -1388,6 +1917,14 @@ class DesignCanvas(ttk.Frame):
         world_x = self.canvas.canvasx(self._last_mouse_canvas_x)
         world_y = self.canvas.canvasy(self._last_mouse_canvas_y)
 
+        if self._is_point_on_group_selected_track_body(world_x, world_y):
+            self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
+            return
+
+        if self._is_point_on_group_selected_turnout(world_x, world_y):
+            self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
+            return
+
         if self._find_selected_track_endpoint_at_point(world_x, world_y) is not None:
             self.canvas.configure(cursor=self.CURSOR_SELECTABLE)
             return
@@ -1442,6 +1979,7 @@ class DesignCanvas(ttk.Frame):
         self._draw_endpoint_snap_preview()
         self._draw_endpoint_snap_flash()
         self._draw_track_snap_preview()
+        self._draw_marquee_selection()
         self._redraw_rulers()
 
     def _draw_background(self) -> None:
@@ -1488,8 +2026,10 @@ class DesignCanvas(ttk.Frame):
 
     def _draw_tracks(self) -> None:
         for track in self._tracks:
-            is_selected = track.id == self._selected_track_id
-
+            is_selected = (
+                track.id == self._selected_track_id
+                or track.id in self._selected_track_ids
+            )
             if is_selected:
                 self.canvas.create_line(
                     track.x1,
@@ -1601,8 +2141,10 @@ class DesignCanvas(ttk.Frame):
                 turnout.diverge_length * math.sin(diverge_angle_rad)
             )
 
-            is_selected = turnout.id == self._selected_turnout_id
-
+            is_selected = (
+                turnout.id == self._selected_turnout_id
+                or turnout.id in self._selected_turnout_ids
+            )
             if is_selected:
                 self.canvas.create_line(
                     x,
@@ -1798,6 +2340,28 @@ class DesignCanvas(ttk.Frame):
                 tags=("track_snap_preview", "track_snap_preview_marker"),
             )
 
+    def _draw_marquee_selection(self) -> None:
+        if (
+            not self._marquee_selecting
+            or self._marquee_start_world_x is None
+            or self._marquee_start_world_y is None
+            or self._marquee_current_world_x is None
+            or self._marquee_current_world_y is None
+        ):
+            return
+
+        self.canvas.create_rectangle(
+            self._marquee_start_world_x,
+            self._marquee_start_world_y,
+            self._marquee_current_world_x,
+            self._marquee_current_world_y,
+            outline="#2f7fff",
+            width=1,
+            dash=(4, 2),
+            fill="",
+            tags=("marquee_selection",),
+        )
+
     def _draw_endpoint_snap_preview(self) -> None:
         candidate = self._endpoint_snap_candidate
         if candidate is None:
@@ -1838,6 +2402,9 @@ class DesignCanvas(ttk.Frame):
         )
 
     def _draw_selected_track_handles(self) -> None:
+        if self._has_group_selection():
+            return
+
         if self._selected_track_id is None:
             return
 
@@ -1880,6 +2447,9 @@ class DesignCanvas(ttk.Frame):
 
     def _draw_selected_turnout_handles(self) -> None:
         import math
+
+        if self._has_group_selection():
+            return
 
         if self._selected_turnout_id is None:
             return
@@ -2028,6 +2598,65 @@ class DesignCanvas(ttk.Frame):
         self.on_status_message(message)
 
     def _on_canvas_release(self, event: tk.Event) -> None:
+        # ------------------------------------------------------------------
+        # Marquee selection release
+        # Finalize the marquee rectangle into a real selected-ID set.
+        # ------------------------------------------------------------------
+        if self._marquee_selecting:
+            self._marquee_current_world_x = self.canvas.canvasx(event.x)
+            self._marquee_current_world_y = self.canvas.canvasy(event.y)
+            self._commit_marquee_selection()
+
+            self._marquee_selecting = False
+            self._marquee_start_world_x = None
+            self._marquee_start_world_y = None
+            self._marquee_current_world_x = None
+            self._marquee_current_world_y = None
+
+            self.redraw()
+
+            total_selected = len(self._selected_track_ids) + len(
+                self._selected_turnout_ids
+            )
+            self._set_status_message(f"Selected {total_selected} piece(s).")
+            return
+
+        # ------------------------------------------------------------------
+        # Group drag release
+        # End multi-selection movement.
+        # Option B first pass:
+        # - snap selected group to grid on release
+        # - only when Snap is enabled from the toolbar
+        # ------------------------------------------------------------------
+        if self._group_dragging:
+            if self._show_snap:
+                pivot = self._get_selected_group_rotation_pivot()
+                if pivot is not None:
+                    pivot_x, pivot_y = pivot
+                    snapped_x, snapped_y = self._snap_point_to_grid(pivot_x, pivot_y)
+
+                    dx = snapped_x - pivot_x
+                    dy = snapped_y - pivot_y
+
+                    if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                        self._move_selected_group(dx, dy)
+
+            self._group_dragging = False
+            self._drag_start_world_x = None
+            self._drag_start_world_y = None
+            self.redraw()
+
+            if self._show_snap:
+                self._set_status_message("Selected group moved (grid snapped).")
+            else:
+                self._set_status_message("Selected group moved.")
+
+            return
+
+        # ------------------------------------------------------------------
+        # Track creation release
+        # Commit the temporary track, optionally snapping endpoint 2 first.
+        # ------------------------------------------------------------------
         if self._creating_track and self._temp_track is not None:
             if (
                 self._show_snap
@@ -2050,7 +2679,14 @@ class DesignCanvas(ttk.Frame):
             self._clear_endpoint_snap_candidate()
 
             self.redraw()
+            self._update_canvas_cursor_for_mode()
 
+        # ------------------------------------------------------------------
+        # Straight-track drag release
+        # Handles either:
+        # - endpoint snap/move completion
+        # - body-drag dock/move completion
+        # ------------------------------------------------------------------
         elif self._active_endpoint_drag is not None:
             if (
                 self._show_snap
@@ -2103,12 +2739,34 @@ class DesignCanvas(ttk.Frame):
 
                 self._set_status_message("Track docked to endpoint.")
             else:
-                self._set_status_message("Track moved.")
+                if self._show_snap and drag_track is not None:
+                    midpoint_x = (drag_track.x1 + drag_track.x2) / 2.0
+                    midpoint_y = (drag_track.y1 + drag_track.y2) / 2.0
+                    snapped_x, snapped_y = self._snap_point_to_grid(
+                        midpoint_x,
+                        midpoint_y,
+                    )
+
+                    dx = snapped_x - midpoint_x
+                    dy = snapped_y - midpoint_y
+
+                    if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                        self._move_track_body(drag_track, dx, dy)
+
+                    self._set_status_message("Track moved (grid snapped).")
+                else:
+                    self._set_status_message("Track moved.")
 
             self._body_drag_snap_endpoint_index = None
             self._clear_endpoint_snap_candidate()
             self.redraw()
 
+        # ------------------------------------------------------------------
+        # Turnout drag release
+        # Handles either:
+        # - turnout endpoint snap/move completion
+        # - turnout body dock/move completion
+        # ------------------------------------------------------------------
         elif self._active_turnout_drag_id is not None:
             drag_turnout = self._get_active_drag_turnout()
 
@@ -2159,18 +2817,36 @@ class DesignCanvas(ttk.Frame):
 
                     self._set_status_message("Turnout docked to endpoint.")
                 else:
-                    self._set_status_message("Turnout moved.")
+                    if self._show_snap and drag_turnout is not None:
+                        snapped_x, snapped_y = self._snap_point_to_grid(
+                            drag_turnout.x,
+                            drag_turnout.y,
+                        )
+
+                        dx = snapped_x - drag_turnout.x
+                        dy = snapped_y - drag_turnout.y
+
+                        if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                            self._move_turnout_body(drag_turnout, dx, dy)
+
+                        self._set_status_message("Turnout moved (grid snapped).")
+                    else:
+                        self._set_status_message("Turnout moved.")
 
                 self._turnout_body_drag_snap_endpoint_name = None
                 self._clear_endpoint_snap_candidate()
 
             self.redraw()
 
+        # ------------------------------------------------------------------
+        # Common drag-state cleanup
+        # ------------------------------------------------------------------
         self._active_track_drag_id = None
         self._active_turnout_drag_id = None
         self._active_endpoint_drag = None
         self._active_turnout_endpoint_drag = None
         self._turnout_body_drag_snap_endpoint_name = None
+        self._group_dragging = False
         self._drag_start_world_x = None
         self._drag_start_world_y = None
 
@@ -2179,19 +2855,58 @@ class DesignCanvas(ttk.Frame):
         self.redraw()
 
     def _on_canvas_motion(self, event: tk.Event) -> None:
-
+        # ------------------------------------------------------------------
+        # Mouse position / cursor refresh
+        # ------------------------------------------------------------------
         self._last_mouse_canvas_x = event.x
         self._last_mouse_canvas_y = event.y
         self._notify_mouse_position()
         self._update_guide_hover_cursor()
-        self._update_track_hover_cursor()
+        self._update_canvas_cursor_for_mode()
 
+        world_x = self.canvas.canvasx(event.x)
+        world_y = self.canvas.canvasy(event.y)
+
+        # ------------------------------------------------------------------
+        # Marquee selection preview
+        # While Ctrl-marquee is active, the drag rectangle owns motion.
+        # ------------------------------------------------------------------
+        if self._marquee_selecting:
+            self._marquee_current_world_x = world_x
+            self._marquee_current_world_y = world_y
+            self.redraw()
+            return
+
+        # ------------------------------------------------------------------
+        # Group drag
+        # Move all currently selected pieces together.
+        # This pass does NOT do group snap docking.
+        # ------------------------------------------------------------------
+        if self._group_dragging:
+            if (
+                self._drag_start_world_x is not None
+                and self._drag_start_world_y is not None
+            ):
+                dx = world_x - self._drag_start_world_x
+                dy = world_y - self._drag_start_world_y
+                self._move_selected_group(dx, dy)
+                self._drag_start_world_x = world_x
+                self._drag_start_world_y = world_y
+                self.redraw()
+            return
+
+        # ------------------------------------------------------------------
+        # Active straight-track drag
+        # Handles either:
+        # - endpoint drag
+        # - whole-track body drag
+        # ------------------------------------------------------------------
         if self._active_track_drag_id is not None:
             drag_track = self._get_active_drag_track()
             if drag_track is not None:
-                world_x = self.canvas.canvasx(event.x)
-                world_y = self.canvas.canvasy(event.y)
-
+                # ----------------------------------------------------------
+                # Straight-track endpoint drag
+                # ----------------------------------------------------------
                 if self._active_endpoint_drag is not None:
                     if self._show_snap:
                         candidate = self._find_nearest_canvas_endpoint(
@@ -2225,6 +2940,10 @@ class DesignCanvas(ttk.Frame):
                         move_x,
                         move_y,
                     )
+
+                # ----------------------------------------------------------
+                # Straight-track body drag
+                # ----------------------------------------------------------
                 elif (
                     self._drag_start_world_x is not None
                     and self._drag_start_world_y is not None
@@ -2256,12 +2975,18 @@ class DesignCanvas(ttk.Frame):
                 self.redraw()
             return
 
+        # ------------------------------------------------------------------
+        # Active turnout drag
+        # Handles either:
+        # - turnout endpoint drag
+        # - whole-turnout body drag
+        # ------------------------------------------------------------------
         if self._active_turnout_drag_id is not None:
             drag_turnout = self._get_active_drag_turnout()
             if drag_turnout is not None:
-                world_x = self.canvas.canvasx(event.x)
-                world_y = self.canvas.canvasy(event.y)
-
+                # ----------------------------------------------------------
+                # Turnout endpoint drag
+                # ----------------------------------------------------------
                 if self._active_turnout_endpoint_drag is not None:
                     if self._show_snap:
                         candidate = self._find_nearest_canvas_endpoint(
@@ -2296,6 +3021,9 @@ class DesignCanvas(ttk.Frame):
                         move_y,
                     )
 
+                # ----------------------------------------------------------
+                # Turnout body drag
+                # ----------------------------------------------------------
                 elif (
                     self._drag_start_world_x is not None
                     and self._drag_start_world_y is not None
@@ -2327,10 +3055,11 @@ class DesignCanvas(ttk.Frame):
                 self.redraw()
             return
 
+        # ------------------------------------------------------------------
+        # Track creation preview
+        # This is the temporary drag preview while creating a new track.
+        # ------------------------------------------------------------------
         if self._creating_track and self._temp_track is not None:
-            world_x = self.canvas.canvasx(event.x)
-            world_y = self.canvas.canvasy(event.y)
-
             if self._show_snap:
                 candidate = self._find_nearest_canvas_endpoint(
                     world_x,
@@ -2368,9 +3097,138 @@ class DesignCanvas(ttk.Frame):
         world_x = self.canvas.canvasx(event.x)
         world_y = self.canvas.canvasy(event.y)
 
+        # ------------------------------------------------------------------
+        # Modifier state
+        # ------------------------------------------------------------------
+        ctrl_pressed = bool(state & 0x0004)
+
+        # ------------------------------------------------------------------
+        # Ctrl + click = begin marquee selection
+        # This takes priority over normal object interaction.
+        # ------------------------------------------------------------------
+
+        if ctrl_pressed:
+            # --------------------------------------------------------------
+            # Ctrl + click toggle selection (track / turnout)
+            # --------------------------------------------------------------
+            clicked_track = self._find_track_at_point(world_x, world_y)
+            if clicked_track is not None:
+                if clicked_track.id in self._selected_track_ids:
+                    self._selected_track_ids.remove(clicked_track.id)
+                    self._set_status_message("Track removed from selection.")
+                else:
+                    self._selected_track_ids.add(clicked_track.id)
+                    self._set_status_message("Track added to selection.")
+
+                self._selected_track_id = None
+                self._selected_turnout_id = None
+                self.redraw()
+                return
+
+            clicked_turnout = self._find_turnout_at_point(world_x, world_y)
+            if clicked_turnout is not None:
+                if clicked_turnout.id in self._selected_turnout_ids:
+                    self._selected_turnout_ids.remove(clicked_turnout.id)
+                    self._set_status_message("Turnout removed from selection.")
+                else:
+                    self._selected_turnout_ids.add(clicked_turnout.id)
+                    self._set_status_message("Turnout added to selection.")
+
+                self._selected_track_id = None
+                self._selected_turnout_id = None
+                self.redraw()
+                return
+
+            # --------------------------------------------------------------
+            # Ctrl + drag fallback → marquee selection
+            # (only when clicking empty canvas)
+            # --------------------------------------------------------------
+            self._pending_trackwork_add = False
+            self._active_track_drag_id = None
+            self._active_turnout_drag_id = None
+            self._active_endpoint_drag = None
+            self._active_turnout_endpoint_drag = None
+            self._drag_start_world_x = None
+            self._drag_start_world_y = None
+            self._group_dragging = False
+            self._clear_endpoint_snap_candidate()
+
+            self._marquee_selecting = True
+            self._marquee_start_world_x = world_x
+            self._marquee_start_world_y = world_y
+            self._marquee_current_world_x = world_x
+            self._marquee_current_world_y = world_y
+            self.redraw()
+            self._set_status_message("Marquee selecting...")
+            return
+
+        # ------------------------------------------------------------------
+        # Armed Add mode
+        # Toolbar Add button arms placement; next canvas click uses the
+        # currently selected Trackwork element.
+        # ------------------------------------------------------------------
+        if self._pending_trackwork_add:
+            self._pending_trackwork_add = False
+            self._clear_group_selection()
+            self._selected_track_id = None
+            self._selected_turnout_id = None
+            self._active_track_drag_id = None
+            self._active_turnout_drag_id = None
+            self._active_endpoint_drag = None
+            self._active_turnout_endpoint_drag = None
+            self._drag_start_world_x = None
+            self._drag_start_world_y = None
+
+            if self._current_trackwork_element == "Turnout":
+                turnout = TurnoutElement.create(world_x, world_y)
+                self._turnouts.append(turnout)
+                self.redraw()
+                self._update_canvas_cursor_for_mode()
+                self._set_status_message("Turnout placed.")
+                return
+
+            self._creating_track = True
+            self._temp_track = StraightTrackElement.create(
+                world_x,
+                world_y,
+                world_x,
+                world_y,
+            )
+            self._clear_track_snap_preview()
+            self._set_status_message("Creating track... drag to set endpoint")
+            self.redraw()
+            return
+
+        # ------------------------------------------------------------------
+        # Group-selection interaction
+        # If a multi-selection exists and the user clicks on any selected
+        # track/turnout body, begin dragging the whole selected group.
+        # Ctrl+click toggle selection is handled earlier.
+        # ------------------------------------------------------------------
+        if self._has_group_selection():
+            if self._is_point_on_group_selected_track_body(
+                world_x, world_y
+            ) or self._is_point_on_group_selected_turnout(world_x, world_y):
+                self._group_dragging = True
+                self._drag_start_world_x = world_x
+                self._drag_start_world_y = world_y
+                self._active_track_drag_id = None
+                self._active_turnout_drag_id = None
+                self._active_endpoint_drag = None
+                self._active_turnout_endpoint_drag = None
+                self._clear_endpoint_snap_candidate()
+                self._set_status_message("Dragging selected group.")
+                return
+
+        # ------------------------------------------------------------------
+        # Single-selection endpoint interaction
+        # Endpoint drag has priority over body drag when a selected object
+        # endpoint is clicked.
+        # ------------------------------------------------------------------
         clicked_endpoint = self._find_selected_track_endpoint_at_point(world_x, world_y)
 
         if clicked_endpoint is not None:
+            self._clear_group_selection()
             self._active_track_drag_id = self._selected_track_id
             self._active_turnout_drag_id = None
             self._active_endpoint_drag = clicked_endpoint
@@ -2395,6 +3253,7 @@ class DesignCanvas(ttk.Frame):
             world_y,
         )
         if clicked_turnout_endpoint is not None:
+            self._clear_group_selection()
             self._active_turnout_drag_id = self._selected_turnout_id
             self._active_track_drag_id = None
             self._active_turnout_endpoint_drag = clicked_turnout_endpoint
@@ -2409,7 +3268,11 @@ class DesignCanvas(ttk.Frame):
             )
             return
 
+        # ------------------------------------------------------------------
+        # Single-selection body drag
+        # ------------------------------------------------------------------
         if self._is_point_on_selected_track_body(world_x, world_y):
+            self._clear_group_selection()
             self._active_track_drag_id = self._selected_track_id
             self._active_turnout_drag_id = None
             self._active_endpoint_drag = None
@@ -2421,8 +3284,12 @@ class DesignCanvas(ttk.Frame):
             self._set_status_message("Dragging track.")
             return
 
+        # ------------------------------------------------------------------
+        # Hit test committed objects for single selection / turnout body drag
+        # ------------------------------------------------------------------
         clicked_track = self._find_track_at_point(world_x, world_y)
         if clicked_track is not None:
+            self._clear_group_selection()
             self._selected_track_id = clicked_track.id
             self._selected_turnout_id = None
             self.redraw()
@@ -2431,6 +3298,7 @@ class DesignCanvas(ttk.Frame):
 
         clicked_turnout = self._find_turnout_at_point(world_x, world_y)
         if clicked_turnout is not None:
+            self._clear_group_selection()
             if self._selected_turnout_id == clicked_turnout.id:
                 self._active_turnout_drag_id = clicked_turnout.id
                 self._active_track_drag_id = None
@@ -2449,8 +3317,12 @@ class DesignCanvas(ttk.Frame):
             self._set_status_message("Turnout selected.")
             return
 
-        # Shift + click uses the active Trackwork element
+        # ------------------------------------------------------------------
+        # Shift + click placement shortcut
+        # This preserves the existing quick-add path alongside toolbar Add.
+        # ------------------------------------------------------------------
         if state & 0x0001:  # Shift
+            self._clear_group_selection()
             self._selected_track_id = None
             self._selected_turnout_id = None
             self._active_track_drag_id = None
@@ -2479,17 +3351,23 @@ class DesignCanvas(ttk.Frame):
             self.redraw()
             return
 
-        # Plain click on empty canvas = clear selection
+        # ------------------------------------------------------------------
+        # Plain click on empty canvas = clear selection / active drag state
+        # ------------------------------------------------------------------
         selection_was_cleared = (
-            self._selected_track_id is not None or self._selected_turnout_id is not None
+            self._has_group_selection()
+            or self._selected_track_id is not None
+            or self._selected_turnout_id is not None
         )
 
+        self._clear_group_selection()
         self._selected_track_id = None
         self._selected_turnout_id = None
         self._active_track_drag_id = None
         self._active_turnout_drag_id = None
         self._active_endpoint_drag = None
         self._active_turnout_endpoint_drag = None
+        self._group_dragging = False
         self._drag_start_world_x = None
         self._drag_start_world_y = None
 
@@ -2497,9 +3375,10 @@ class DesignCanvas(ttk.Frame):
             self.redraw()
             self._set_status_message("Selection cleared.")
 
-        # Existing guide interaction requires:
-        # - rulers visible
-        # - Alt held
+        # ------------------------------------------------------------------
+        # Alt + click guide interaction
+        # Only applies when nothing else above handled the click.
+        # ------------------------------------------------------------------
         if not self._show_rulers:
             return
 
